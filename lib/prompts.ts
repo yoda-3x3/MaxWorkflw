@@ -4,7 +4,7 @@
 import { MAX_AGENTS, MAX_DEPTH } from './types';
 import type { ApprovalKind, Plan, PlanUnit, PlanWorker } from './types';
 
-// The four hard stops (§1). Agents ask upward through request_approval; they never act.
+// The four hard stops (§1). Agents ask upward with an APPROVAL_REQUEST line; they never act.
 export const HARD_STOP_RULES: ReadonlyArray<{ rule: number; kind: ApprovalKind; text: string }> = [
   { rule: 1, kind: 'production_deploy', text: 'Never deploy to production. Previews are fine.' },
   {
@@ -39,8 +39,11 @@ export const DEFAULT_CONSTRAINTS =
 const EXECUTION_NOTE =
   'You cannot execute code. Never claim a build, test or run passed. "Verified" means you checked it by reading, and you say so.';
 
+const REPO_NOTE =
+  'You work in a checkout of the project at your working directory. Read and edit files there with your tools. Commit nothing and push nothing: the runner does that. Never deploy and never touch secrets.';
+
 const APPROVAL_NOTE =
-  'Ordinary work, including code that might break, needs no approval: proceed. Only the hard stops pause you. If one applies, call request_approval with its rule number and a one-line request, stop that step, and wait. Other work continues.';
+  'Ordinary work, including code that might break, needs no approval: proceed. Only the hard stops pause you. If one applies, stop that step and make the last line of your reply exactly "APPROVAL_REQUEST rule=N: <one-line request>", with N the hard stop number. Other work continues.';
 
 // ---- Brief template (§4) ----
 
@@ -133,7 +136,7 @@ export function plannerUserPrompt(task: string, repo?: RepoContext): string {
   if (repo) {
     lines.push(
       '',
-      `REPO: ${repo.repo}. Agents can list_files, read_file and write_file. Writes land only on a dedicated branch. Make scopes file paths or directories.`,
+      `REPO: ${repo.repo}. Agents work in a checkout of it and edit files there. The runner commits to a dedicated branch; agents never push. Make scopes file paths or directories.`,
     );
   }
   return lines.join('\n');
@@ -146,6 +149,7 @@ export function workerSystemPrompt(): string {
     'Your brief is your whole scope. Stay inside SCOPE, follow CONSTRAINTS, and stop once DONE WHEN is met. Do not touch anything else.',
     '',
     EXECUTION_NOTE,
+    REPO_NOTE,
     APPROVAL_NOTE,
     '',
     'Keep the report under 150 words. No logs, no whole files. Name paths, not contents.',
@@ -162,6 +166,7 @@ export function leadSystemPrompt(): string {
     'You own your scope. Resolve overlaps and conflicts between your workers yourself. Do not redo their work unless integration needs it. Do not pass the same problem back and forth.',
     '',
     EXECUTION_NOTE,
+    REPO_NOTE,
     APPROVAL_NOTE,
     '',
     'Keep the report under 150 words. No logs, no whole files.',
