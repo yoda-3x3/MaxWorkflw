@@ -7,9 +7,6 @@
     }
   ],
   "functions": {
-    "app/api/runs/[id]/step/route.ts": {
-      "maxDuration": 300
-    },
     "app/api/runs/[id]/kick/route.ts": {
       "maxDuration": 60
     },
