@@ -1,9 +1,10 @@
-// End-to-end run through the real engine and in-memory store, with Claude mocked.
-// Covers: plan -> parallel wave (with one failure and retry) -> lead integration ->
-// standalone worker that pauses for approval -> approval resume -> final report.
+// End-to-end run through engine.step() on the in-memory store, with the Llm port mocked.
+// Written against the Llm contract (lib/llm.ts): complete/work, and work() returns { text, usage, approval? }.
+// Covers: plan (complete) -> parallel wave with one failure and retry -> lead integration ->
+// standalone worker that pauses for approval -> approval resume via the decision queue -> final.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMockClaude, textReply, toolReply, type MockRequest } from "@/lib/claude";
+import { createMockLlm, type MockCall, type MockReply } from "@/lib/llm";
 import { createMemoryBackend, createRunStore } from "@/lib/store";
 import { createRun, step, type EngineDeps } from "@/lib/engine";
 import {
@@ -33,11 +34,11 @@ const PLAN: Plan = {
   ],
 };
 
-function setup(handler: (req: MockRequest) => ReturnType<typeof textReply> | Promise<ReturnType<typeof textReply>>) {
-  const claude = createMockClaude(handler);
+function setup(handler: (call: MockCall) => MockReply | Promise<MockReply>) {
+  const llm = createMockLlm(handler);
   const store = createRunStore(createMemoryBackend());
   const deps: EngineDeps = {
-    claude,
+    llm,
     store,
     github: () => {
       throw new Error("github is not used in this run");
@@ -45,7 +46,7 @@ function setup(handler: (req: MockRequest) => ReturnType<typeof textReply> | Pro
     models: MODELS,
     now: () => Date.now(),
   };
-  return { claude, store, deps };
+  return { llm, store, deps };
 }
 
 // Steps until the run stops needing an immediate next step (paused, finished, or failed).
@@ -59,48 +60,54 @@ async function driveUntilSettled(runId: string, deps: EngineDeps) {
   throw new Error(`engine did not settle; actions so far: ${actions.join(",")}`);
 }
 
-function userText(req: MockRequest): string {
-  const first = req.messages[0];
-  return typeof first.content === "string" ? first.content : JSON.stringify(first.content);
+// The prompt the agent receives. Routing keys off this text, not call order.
+function promptOf(call: MockCall): string {
+  return call.req.prompt;
 }
 
 test("full run: plan, parallel wave with retry, lead integration, approval pause/resume, final", async () => {
   const attempts = new Map<string, number>();
   let shipCalls = 0;
 
-  const { claude, store, deps } = setup((req) => {
-    if (req.system === plannerSystemPrompt()) return textReply(JSON.stringify(PLAN));
-    if (req.system === finalSystemPrompt()) return textReply("FINAL: scans integrated and shipped");
+  const { llm, store, deps } = setup((call) => {
+    const { req } = call;
+    const prompt = promptOf(call);
 
-    const text = userText(req);
-    if (req.system === leadSystemPrompt()) {
-      // The lead must see its workers' reports to integrate them.
-      return textReply("LEAD INTEGRATED: " + (text.includes("scan A report") && text.includes("scan B report") ? "both" : "missing"));
+    if (call.kind === "complete" && req.system === plannerSystemPrompt()) {
+      return { text: JSON.stringify(PLAN) };
     }
-    if (req.system === workerSystemPrompt()) {
-      if (text.includes("SCAN_B")) {
+    if (call.kind === "complete" && req.system === finalSystemPrompt()) {
+      return { text: "FINAL: scans integrated and shipped" };
+    }
+    if (call.kind === "work" && req.system === leadSystemPrompt()) {
+      // The lead must see its workers' reports to integrate them.
+      const both = prompt.includes("scan A report") && prompt.includes("scan B report");
+      return { text: "LEAD INTEGRATED: " + (both ? "both" : "missing") };
+    }
+    if (call.kind === "work" && req.system === workerSystemPrompt()) {
+      if (prompt.includes("SCAN_B")) {
         const n = (attempts.get("B") ?? 0) + 1;
         attempts.set("B", n);
         // One failure, then a retry that succeeds.
         if (n === 1) throw new Error("upstream 503");
-        return textReply("scan B report");
+        return { text: "scan B report" };
       }
-      if (text.includes("SCAN_A")) return textReply("scan A report");
-      if (text.includes("SHIP")) {
+      if (prompt.includes("SCAN_A")) return { text: "scan A report" };
+      if (prompt.includes("SHIP")) {
         shipCalls += 1;
         // First attempt asks for approval (hard stop 1: production deploy).
         if (shipCalls === 1) {
-          return toolReply([{ id: "tu1", name: "request_approval", input: { rule: 1, request: "Deploy to production" } }]);
+          return { text: "", approval: { rule: 1, request: "Deploy to production" } };
         }
-        return textReply("release note written after approval");
+        return { text: "release note written after approval" };
       }
     }
-    throw new Error("unexpected mock request");
+    throw new Error(`unexpected mock call: ${call.kind} ${req.system ?? "(no system)"}`);
   });
 
   const run = await createRun({ ownerId: "alice@example.com", task: "ship the thing" }, deps);
 
-  // Plan + wave + wave + wave + wave, then the Ship worker pauses. Nothing else is runnable.
+  // Plan, then waves, then the Ship worker pauses. Nothing else is runnable.
   const paused = await driveUntilSettled(run.id, deps);
   assert.equal(paused.last.action, "waiting");
   assert.equal(paused.last.more, false);
@@ -150,19 +157,23 @@ test("full run: plan, parallel wave with retry, lead integration, approval pause
   assert(saved.tokens > 0);
 
   // Every model call used the expected tier's model.
-  const models = new Set(claude.requests.map((r) => r.model));
+  const models = new Set(llm.calls.map((c) => c.req.model));
   assert.deepEqual([...models].sort(), [MODELS.lead, MODELS.orchestrator, MODELS.worker].sort());
 });
 
 test("a worker that keeps failing is marked failed and the run still finalizes", async () => {
-  const { store, deps } = setup((req) => {
-    if (req.system === plannerSystemPrompt()) return textReply(JSON.stringify(PLAN));
-    if (req.system === finalSystemPrompt()) return textReply("FINAL: partial");
-    if (req.system === leadSystemPrompt()) return textReply("LEAD");
-    const text = userText(req);
-    if (text.includes("SCAN_B")) throw new Error("always broken");
-    if (text.includes("SCAN_A")) return textReply("scan A report");
-    return textReply("ship note");
+  const { store, deps } = setup((call) => {
+    const prompt = promptOf(call);
+    if (call.kind === "complete" && call.req.system === plannerSystemPrompt()) {
+      return { text: JSON.stringify(PLAN) };
+    }
+    if (call.kind === "complete" && call.req.system === finalSystemPrompt()) {
+      return { text: "FINAL: partial" };
+    }
+    if (call.req.system === leadSystemPrompt()) return { text: "LEAD" };
+    if (prompt.includes("SCAN_B")) throw new Error("always broken");
+    if (prompt.includes("SCAN_A")) return { text: "scan A report" };
+    return { text: "ship note" };
   });
 
   const run = await createRun({ ownerId: "alice@example.com", task: "partial" }, deps);

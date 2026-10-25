@@ -2,14 +2,13 @@
 // and in Node route handlers alike. No new dependencies.
 //
 // Tokens are `base64url(JSON payload).base64url(HMAC-SHA256)`. Every token carries
-// a `kind` so a session cookie can never be replayed as a magic link or OAuth state.
+// a `kind` so a session cookie can never be replayed as an OAuth state.
 
-import type { AuthMethod, SessionUser } from './types';
+import type { SessionUser } from './types';
 
 export const SESSION_COOKIE = 'mw_session';
 export const OAUTH_STATE_COOKIE = 'mw_oauth_state';
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14;
-export const MAGIC_TTL_SECONDS = 60 * 15;
 export const OAUTH_STATE_TTL_SECONDS = 60 * 10;
 
 const MIN_SECRET_LENGTH = 32;
@@ -22,22 +21,15 @@ export interface AuthEnv {
   CRON_SECRET?: string;
 }
 
-interface SessionPayload extends Signed {
-  kind: 'session';
-  method: AuthMethod;
-  login: string | null;
-  email: string | null;
-  iat: number;
-}
-
 interface Signed {
   kind: string;
   exp: number;
 }
 
-interface MagicPayload extends Signed {
-  kind: 'magic';
-  email: string;
+interface SessionPayload extends Signed {
+  kind: 'session';
+  method: 'github';
+  login: string;
   iat: number;
 }
 
@@ -113,31 +105,21 @@ function normalize(value: string | null | undefined): string | null {
   return v ? v : null;
 }
 
-// ALLOWED_USERS is a comma-separated list. Entries containing "@" are emails, the rest
-// are GitHub logins. Matching is case-insensitive. An empty or unset list denies everyone.
-export function parseAllowlist(raw: string | undefined): { emails: Set<string>; logins: Set<string> } {
-  const emails = new Set<string>();
+// ALLOWED_USERS is a comma-separated list of GitHub logins. Matching is case-insensitive.
+// Entries containing "@" are not logins and are skipped. An empty or unset list denies everyone.
+export function parseAllowlist(raw: string | undefined): Set<string> {
   const logins = new Set<string>();
   for (const entry of (raw ?? '').split(',')) {
     const v = normalize(entry);
-    if (!v) continue;
-    (v.includes('@') ? emails : logins).add(v);
+    if (!v || v.includes('@')) continue;
+    logins.add(v);
   }
-  return { emails, logins };
+  return logins;
 }
 
-export function isAllowed(
-  identity: { email?: string | null; login?: string | null },
-  raw: string | undefined,
-): boolean {
-  const { emails, logins } = parseAllowlist(raw);
-  const email = normalize(identity.email);
+export function isAllowed(identity: { login?: string | null }, raw: string | undefined): boolean {
   const login = normalize(identity.login);
-  return Boolean((email && emails.has(email)) || (login && logins.has(login)));
-}
-
-export function isPlausibleEmail(value: string): boolean {
-  return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+  return Boolean(login && parseAllowlist(raw).has(login));
 }
 
 // Paths that must be reachable without a session.
@@ -150,22 +132,19 @@ export function isPublicPath(pathname: string): boolean {
   );
 }
 
-// Owner id is the key runs are stored under (Run.ownerId). It is derived from the
-// identity the user signed in with, so a GitHub login and an email are different owners.
-function ownerId(method: AuthMethod, login: string | null, email: string | null): string {
-  return method === 'github' ? `github:${login}` : `email:${email}`;
+// Owner id is the key runs are stored under (Run.ownerId).
+function ownerId(login: string): string {
+  return `github:${login}`;
 }
 
-// Server-to-server calls (Vercel cron, the step self-call) carry no cookie. They may pass
-// middleware only on the exact internal paths and only with the exact CRON_SECRET bearer.
-// The route handlers still check the secret themselves.
+// Vercel cron calls carry no cookie. They pass middleware only under /api/cron/ and only
+// with the exact CRON_SECRET bearer. The route handlers still check the secret themselves.
 export function isCronAuthorized(
   pathname: string,
   authorization: string | null | undefined,
   env: AuthEnv,
 ): boolean {
-  const internal = pathname === '/api/cron' || pathname.startsWith('/api/cron/') || /^\/api\/runs\/[^/]+\/step$/.test(pathname);
-  if (!internal || !env.CRON_SECRET || !authorization) return false;
+  if (!pathname.startsWith('/api/cron/') || !env.CRON_SECRET || !authorization) return false;
   const expected = enc.encode(`Bearer ${env.CRON_SECRET}`);
   const actual = enc.encode(authorization);
   if (expected.length !== actual.length) return false;
@@ -175,22 +154,21 @@ export function isCronAuthorized(
 }
 
 export async function createSession(
-  input: { method: AuthMethod; login?: string | null; email?: string | null },
+  input: { method: 'github'; login: string },
   secret: string | undefined,
   now: number = nowSeconds(),
 ): Promise<string> {
   const payload: SessionPayload = {
     kind: 'session',
     method: input.method,
-    login: normalize(input.login),
-    email: normalize(input.email),
+    login: normalize(input.login) ?? '',
     iat: now,
     exp: now + SESSION_TTL_SECONDS,
   };
   return signToken(payload, secret);
 }
 
-// Returns the signed-in user only if the signature and expiry are valid AND the identity
+// Returns the signed-in user only if the signature and expiry are valid AND the login
 // is still on the allowlist, so removing someone from ALLOWED_USERS revokes them at once.
 export async function verifySession(
   token: string | undefined,
@@ -198,40 +176,13 @@ export async function verifySession(
   now: number = nowSeconds(),
 ): Promise<SessionUser | null> {
   const payload = await verifyToken<SessionPayload>(token, env.SESSION_SECRET, 'session', now);
-  if (!payload) return null;
-  if (!isAllowed({ email: payload.email, login: payload.login }, env.ALLOWED_USERS)) return null;
-  const display = payload.method === 'github' ? payload.login : payload.email;
-  if (!display) return null;
+  if (!payload || payload.method !== 'github' || !payload.login) return null;
+  if (!isAllowed({ login: payload.login }, env.ALLOWED_USERS)) return null;
   return {
-    id: ownerId(payload.method, payload.login, payload.email),
-    method: payload.method,
-    display,
+    id: ownerId(payload.login),
+    method: 'github',
+    display: payload.login,
   };
-}
-
-export async function createMagicToken(
-  email: string,
-  secret: string | undefined,
-  now: number = nowSeconds(),
-): Promise<string> {
-  const payload: MagicPayload = {
-    kind: 'magic',
-    email: normalize(email) ?? '',
-    iat: now,
-    exp: now + MAGIC_TTL_SECONDS,
-  };
-  return signToken(payload, secret);
-}
-
-// Returns the email only if the token is valid and the address is still allowed.
-export async function verifyMagicToken(
-  token: string | undefined,
-  env: AuthEnv,
-  now: number = nowSeconds(),
-): Promise<string | null> {
-  const payload = await verifyToken<MagicPayload>(token, env.SESSION_SECRET, 'magic', now);
-  if (!payload || !isAllowed({ email: payload.email }, env.ALLOWED_USERS)) return null;
-  return payload.email;
 }
 
 // OAuth state is a signed nonce, and the same value must also come back in a

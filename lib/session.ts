@@ -1,5 +1,5 @@
 // Request-level helpers shared by the run and cron routes: who is calling, whether a
-// cron/step call is authorized, and how a run is kicked.
+// cron/step call is authorized, and how a run is dispatched.
 import { timingSafeEqual } from "node:crypto";
 import { after } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
@@ -38,24 +38,24 @@ export function isCronAuthorized(req: Request): boolean {
 }
 
 /**
- * Calls the step route with CRON_SECRET and waits for its dispatch. The step route answers 202
- * before it does any work, so awaiting here does not nest invocations. Awaiting guarantees the
- * request is sent before this invocation can be frozen. Failures are logged, and the cron backstop
- * and UI kick recover a dropped step.
+ * Dispatches the GitHub Actions workflow that drives one run. Never throws: failures are logged,
+ * and the cron backstop and UI kick recover a dropped dispatch. Without GITHUB_TOKEN it does
+ * nothing. Await it inside after() so the request is sent before the invocation is frozen.
+ * `env` and `fetch` default to the process env and global fetch; tests pass their own.
+ * The github module is imported lazily so that loading this file never depends on it.
  */
-export async function kickStep(origin: string, runId: string): Promise<void> {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return;
-  const url = `${origin}/api/runs/${encodeURIComponent(runId)}/step`;
+export async function dispatchRun(
+  runId: string,
+  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch } = {},
+): Promise<void> {
+  const env = opts.env ?? process.env;
+  const token = env.GITHUB_TOKEN;
+  if (!token) return;
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${secret}` },
-      cache: "no-store",
-    });
-    if (!res.ok) console.error(`kickStep ${runId}: step responded ${res.status}`);
+    const { dispatchRunWorkflow, getDispatchConfig } = await import("@/lib/github");
+    await dispatchRunWorkflow({ ...getDispatchConfig(env), token, runId, fetch: opts.fetch });
   } catch (err) {
-    console.error(`kickStep ${runId}: dispatch failed`, err);
+    console.error(`dispatchRun ${runId}: dispatch failed`, err);
   }
 }
 
@@ -69,11 +69,6 @@ export function runAfterResponse(task: () => Promise<void>): void {
   } catch {
     void task();
   }
-}
-
-/** Schedules kickStep for after the current response has been sent. */
-export function scheduleKick(origin: string, runId: string): void {
-  runAfterResponse(() => kickStep(origin, runId));
 }
 
 export function json(body: unknown, status = 200): Response {

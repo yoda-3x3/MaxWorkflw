@@ -4,7 +4,7 @@ import "./globals.css";
 import "../components/views/views.css";
 
 export const metadata: Metadata = {
-  title: "MaxWorkflw",
+  title: "WorkflwPro",
   description: "Run a 3-tier agent team from any browser.",
 };
 
@@ -18,9 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <div className="ticker-sticky">
-          <StockTicker />
-        </div>
+        <StockTicker />
         {children}
       </body>
     </html>
