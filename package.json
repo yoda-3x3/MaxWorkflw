@@ -1,0 +1,23 @@
+{
+  "name": "maxworkflw",
+  "version": "0.1.0",
+  "description": "Web dashboard for running a 3-tier agent team (Orchestrator -> Lead -> Worker) from any browser.",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "tsx --test \"lib/**/*.test.ts\" \"app/**/*.test.ts\"",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "private": "true",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
+}
