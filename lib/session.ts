@@ -42,13 +42,19 @@ export function isCronAuthorized(req: Request): boolean {
  * Dispatches the GitHub Actions workflow that drives one run. Never throws: failures are logged,
  * and the cron backstop and UI kick recover a dropped dispatch. Without GITHUB_TOKEN it does
  * nothing. Await it inside after() so the request is sent before the invocation is frozen.
+ * `env` and `fetch` default to the process env and global fetch; tests pass their own.
+ * The github module is imported lazily so that loading this file never depends on it.
  */
-export async function dispatchRun(runId: string): Promise<void> {
-  const token = process.env.GITHUB_TOKEN;
+export async function dispatchRun(
+  runId: string,
+  opts: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch } = {},
+): Promise<void> {
+  const env = opts.env ?? process.env;
+  const token = env.GITHUB_TOKEN;
   if (!token) return;
   try {
-    const config = getDispatchConfig(process.env);
-    await dispatchRunWorkflow({ ...config, token, runId });
+    const { dispatchRunWorkflow, getDispatchConfig } = await import("@/lib/github");
+    await dispatchRunWorkflow({ ...getDispatchConfig(env), token, runId, fetch: opts.fetch });
   } catch (err) {
     console.error(`dispatchRun ${runId}: dispatch failed`, err);
   }
