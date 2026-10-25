@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { join } from 'node:path'
 import {
   basicAuthHeader,
   buildCheckoutArgs,

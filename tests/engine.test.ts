@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createMemoryBackend, createRunStore } from '../lib/store'
 import { createMockLlm, type MockCall, type MockHandler } from '../lib/llm'
 import { branchForRun } from '../lib/github'
-import { createRun, runStep, step, type EngineDeps, type EngineStore, type EngineWorkspace } from '../lib/engine'
+import { createRun, runStep, step, type EngineDeps, type EngineGitHub, type EngineStore, type EngineWorkspace } from '../lib/engine'
 import { AGENT_STALL_MS, RUN_DEADLINE_MS, type ApprovalDecision, type Run } from '../lib/types'
 
 // Everything here is mocked. The store is the real one on the in-memory backend,
@@ -26,7 +26,7 @@ function fakeGithub() {
       prs.push({ runId, ...args })
       return { number: 7, url: 'https://github.test/o/r/pull/7', state: 'open' }
     },
-  })
+  }) as unknown as EngineGitHub
   return { github, prs }
 }
 
