@@ -192,7 +192,7 @@ export interface RunIndexEntry {
 
 // ---- Session (auth) ----
 
-export type AuthMethod = "github" | "magic_link";
+export type AuthMethod = "github";
 
 export interface SessionUser {
   /** Same key as Run.ownerId. */
