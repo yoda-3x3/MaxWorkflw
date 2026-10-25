@@ -7,6 +7,7 @@ import {
   buildCommitArgs,
   buildPushArgs,
   cloneUrl,
+  GIT_HARDENING,
   isSecretLikePath,
   parseNameList,
   parseRepo,
@@ -46,7 +47,16 @@ test('auth goes in an extraheader, never in the URL', () => {
   assert.ok(!cloneUrl('acme', 'app').includes('tok'))
 })
 
-test('secret-looking paths are detected by basename', () => {
+test('secret-looking paths are detected in every segment, not just the basename', () => {
+  for (const p of ['deploy/.env.production', 'keys/server.pem', 'sub/.git/config', '.ssh/config', 'a/.git-credentials', 'x/y/id_ed25519']) {
+    assert.equal(isSecretLikePath(p), true, p)
+  }
+  for (const p of ['.env.example', 'config/.env.sample', 'src/git/index.ts', 'github/workflows/run.yml']) {
+    assert.equal(isSecretLikePath(p), false, p)
+  }
+});
+
+test('secret-looking paths are detected by name', () => {
   for (const p of ['.env', '.env.local', 'app/.env.production', 'certs/server.pem', 'keys/id_rsa',
     'config/secrets.json', 'aws-credentials', 'ci/client_secret.yaml', '.npmrc', 'x/.netrc']) {
     assert.equal(isSecretLikePath(p), true, p)
@@ -134,7 +144,7 @@ test('prepareWorkspace clones, branches from the default branch, and cleans up',
   assert.equal(clone.env?.GIT_TERMINAL_PROMPT, '0')
 
   const checkout = calls.find((c) => c.args.includes('checkout'))!
-  assert.deepEqual(checkout.args, ['checkout', '-B', 'workflwpro/r1', 'origin/main'])
+  assert.deepEqual(checkout.args.slice(GIT_HARDENING.length), ['checkout', '-B', 'workflwpro/r1', 'origin/main'])
 
   await ws.cleanup()
   assert.deepEqual(removed, ['/tmp/fake-root'])
@@ -149,7 +159,7 @@ test('prepareWorkspace reuses an existing remote branch', async () => {
     makeTempDir: async () => '/tmp/x', removeDir: async () => {},
   })
   const checkout = calls.find((c) => c.args.includes('checkout'))!
-  assert.deepEqual(checkout.args, ['checkout', '-B', 'workflwpro/r1', 'origin/workflwpro/r1'])
+  assert.deepEqual(checkout.args.slice(GIT_HARDENING.length), ['checkout', '-B', 'workflwpro/r1', 'origin/workflwpro/r1'])
   assert.ok(calls.some((c) => c.args.includes('fetch')))
 })
 
@@ -186,7 +196,7 @@ test('commit unstages secret-looking files and commits the rest as WorkflwPro', 
   assert.deepEqual(result, { committed: true, skipped: ['.env', 'config/secrets.json'] })
 
   const reset = calls.find((c) => c.args.includes('reset'))!
-  assert.deepEqual(reset.args, ['reset', '-q', '--', '.env', 'config/secrets.json'])
+  assert.deepEqual(reset.args.slice(GIT_HARDENING.length), ['reset', '-q', '--', '.env', 'config/secrets.json'])
   const commit = calls.find((c) => c.args.includes('commit'))!
   assert.ok(commit.args.includes('user.name=WorkflwPro'))
   assert.equal(commit.args[commit.args.indexOf('-m') + 1], 'wave 1')
@@ -255,4 +265,19 @@ test('push is a plain git push origin HEAD with auth config, never forced', asyn
   assert.deepEqual(push.args.slice(-3), ['push', 'origin', 'HEAD'])
   assert.ok(push.args.includes('-c'))
   assert.ok(!push.args.some((a) => /force|--delete|:refs/.test(a)))
+})
+
+test('every git call the runner makes carries the hardening overrides and a clean env', async () => {
+  const { exec, calls } = scripted(baseHandlers({ add: () => ok(), diff: () => ok(''), 'rev-list': () => ok('1\n') }))
+  const ws = await prepareWorkspace({
+    repo: 'acme/app', runId: 'r1', token: 'T', exec,
+    makeTempDir: async () => '/tmp/h', removeDir: async () => {},
+  })
+  await ws.commit('msg')
+  await ws.finish()
+  assert.ok(calls.length > 5)
+  for (const c of calls) {
+    assert.deepEqual(c.args.slice(0, GIT_HARDENING.length), GIT_HARDENING, c.args.join(' '))
+    assert.equal(c.env?.GIT_CONFIG_NOSYSTEM, '1')
+  }
 })

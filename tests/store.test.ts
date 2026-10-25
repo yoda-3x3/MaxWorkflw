@@ -230,3 +230,17 @@ test("backendFromEnv uses Upstash when both env vars are set", async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test("a stale holder cannot release a lock that expired and was taken over", async () => {
+  let clock = 1_000;
+  const store = createRunStore(createMemoryBackend(() => clock));
+  const stale = await store.acquireRunLock("r1", 60);
+  assert.ok(stale);
+  clock += 61_000;
+  const fresh = await store.acquireRunLock("r1", 60);
+  assert.ok(fresh, "expired lock is free to take");
+
+  assert.equal(await store.releaseRunLock("r1", stale), false);
+  assert.equal(await store.acquireRunLock("r1", 60), null, "the new holder still holds the lock");
+  assert.equal(await store.releaseRunLock("r1", fresh), true);
+});

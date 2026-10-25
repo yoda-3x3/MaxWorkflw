@@ -27,7 +27,18 @@ const REPO_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/
 const RUN_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/
 const BRANCH_RE = /^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$/
 
-const GIT_ENV = { GIT_TERMINAL_PROMPT: '0' }
+// The agent writes into this clone, so it can plant repo-local config or hooks. Every git call
+// the runner makes goes through these overrides, which win over anything in .git/config:
+// no hooks, no fsmonitor program, no ssh command, no ext:: transport. GIT_CONFIG_NOSYSTEM stops
+// the host's /etc/gitconfig from adding its own.
+export const GIT_HARDENING = [
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.sshCommand=',
+  '-c', 'protocol.ext.allow=never',
+]
+
+const GIT_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1' }
 
 export class GitError extends Error {}
 
@@ -55,20 +66,23 @@ export function authConfigArgs(token: string): string[] {
   return ['-c', `http.https://github.com/.extraheader=${basicAuthHeader(token)}`]
 }
 
-const SECRET_LIKE_BASENAME = [
+// Checked against every segment of a path, so `deploy/.env.production`, `keys/server.pem`
+// and `sub/.git/config` are all caught, not just the basename.
+const SECRET_LIKE_SEGMENT = [
   /^\.env(\..+)?$/, // .env, .env.local; templates are exempt below
   /\.(pem|key|p12|pfx|keystore|jks)$/i,
   /^id_(rsa|dsa|ecdsa|ed25519)$/,
   /(^|[._-])(secrets?|credentials?)([._-]|\.|$)/i,
-  /^(\.netrc|\.npmrc|\.git-credentials)$/,
+  /^(\.netrc|\.npmrc|\.git-credentials|\.ssh|\.gnupg|\.git)$/,
 ]
 const TEMPLATE_ENV_RE = /^\.env\.(example|sample|template)$/
 
-// True for files that must never be committed, judged by basename only.
+// True for paths that must never be committed: any segment looks like a secret or is inside .git.
 export function isSecretLikePath(path: string): boolean {
-  const base = path.split('/').pop() ?? path
-  if (TEMPLATE_ENV_RE.test(base)) return false
-  return SECRET_LIKE_BASENAME.some((re) => re.test(base))
+  return path
+    .split('/')
+    .filter((seg) => seg.length > 0)
+    .some((seg) => !TEMPLATE_ENV_RE.test(seg) && SECRET_LIKE_SEGMENT.some((re) => re.test(seg)))
 }
 
 export function splitSecretPaths(paths: string[]): { keep: string[]; unstage: string[] } {
@@ -143,7 +157,7 @@ export async function prepareWorkspace(opts: PrepareOptions): Promise<Workspace>
   const dir = join(root, 'repo')
 
   const git = async (args: string[], cwd: string | undefined, label: string, auth = false): Promise<ExecResult> => {
-    const full = auth ? [...authConfigArgs(opts.token), ...args] : args
+    const full = [...GIT_HARDENING, ...(auth ? authConfigArgs(opts.token) : []), ...args]
     const r = await opts.exec(full, { cwd, env: GIT_ENV })
     if (r.code !== 0) {
       const last = r.stderr.trim().split('\n').pop() ?? ''
@@ -181,7 +195,7 @@ export async function prepareWorkspace(opts: PrepareOptions): Promise<Workspace>
         const { unstage } = splitSecretPaths(parseNameList(staged.stdout))
         if (unstage.length > 0) await git(['reset', '-q', '--', ...unstage], dir, 'reset')
         // `diff --cached --quiet` exits 1 when something is staged.
-        const pending = await opts.exec(['diff', '--cached', '--quiet'], { cwd: dir, env: GIT_ENV })
+        const pending = await opts.exec([...GIT_HARDENING, 'diff', '--cached', '--quiet'], { cwd: dir, env: GIT_ENV })
         if (pending.code === 0) return { committed: false, skipped: unstage }
         await git(buildCommitArgs(message), dir, 'commit')
         await git(buildPushArgs(), dir, 'push', true)

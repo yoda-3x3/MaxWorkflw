@@ -3,7 +3,16 @@ import assert from 'node:assert/strict'
 import { createMemoryBackend, createRunStore } from '../lib/store'
 import { createMockLlm, type MockCall, type MockHandler } from '../lib/llm'
 import { branchForRun } from '../lib/github'
-import { createRun, runStep, step, type EngineDeps, type EngineGitHub, type EngineStore, type EngineWorkspace } from '../lib/engine'
+import {
+  LOCK_TTL_SEC,
+  createRun,
+  runStep,
+  step,
+  type EngineDeps,
+  type EngineGitHub,
+  type EngineStore,
+  type EngineWorkspace,
+} from '../lib/engine'
 import { AGENT_STALL_MS, RUN_DEADLINE_MS, type ApprovalDecision, type Run } from '../lib/types'
 
 // Everything here is mocked. The store is the real one on the in-memory backend,
@@ -451,4 +460,51 @@ test('a save that fails after the plan is attached rolls back, so the retry plan
   assert.equal((await step(run.id, env.deps)).action, 'planned')
   const planned = await env.current(run.id)
   assert.equal(planned.agents.length, 2, 'orchestrator + X, no duplicates')
+})
+
+test('decisions drained by a failing step go back on the queue, so the next step still applies them', async () => {
+  const env = setup((c) => {
+    if (isPlanner(c)) return planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
+    if (isFinal(c)) return { text: 'final' }
+    if (!promptOf(c).includes('APPROVAL DECISION')) return approvalFor(1, 'ship to prod?')
+    return { text: 'x deployed' }
+  })
+  const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
+  await step(run.id, env.deps)
+  await step(run.id, env.deps)
+  assert.equal((await step(run.id, env.deps)).action, 'waiting')
+  const approvalId = (await env.current(run.id)).approvals[0].id
+  await env.store.enqueueDecision(run.id, { id: 'd1', runId: run.id, approvalId, decision: 'approved', decidedAt: 2_000 })
+
+  // The step drains the decision, then the save fails. The decision must not be lost.
+  const failingStore: EngineStore = Object.assign(Object.create(env.store), {
+    saveRun: async () => {
+      throw new Error('db down')
+    },
+  })
+  await assert.rejects(step(run.id, { ...env.deps, store: failingStore }), /db down/)
+  const requeued = await env.store.drainDecisions(run.id)
+  assert.deepEqual(requeued.map((d) => d.id), ['d1'])
+  await env.store.enqueueDecision(run.id, requeued[0])
+
+  assert.deepEqual(await drain(run.id, env.deps), ['wave', 'finalized'])
+  const end = await env.current(run.id)
+  assert.equal(end.approvals[0].status, 'approved')
+  assert.equal(end.status, 'done')
+})
+
+test('the run lock outlives the longest step', async () => {
+  const env = setup(() => ({ text: 'x' }))
+  const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
+  const ttls: number[] = []
+  const spying: EngineStore = Object.assign(Object.create(env.store), {
+    acquireRunLock: async (id: string, ttl?: number) => {
+      ttls.push(ttl ?? 0)
+      return env.store.acquireRunLock(id, ttl)
+    },
+  })
+  await step(run.id, { ...env.deps, store: spying })
+  // One model call is capped at 30 min; a step is at most one parallel wave of those.
+  assert.ok(LOCK_TTL_SEC >= 2 * 30 * 60, `lock ttl ${LOCK_TTL_SEC}s is shorter than a step`)
+  assert.deepEqual(ttls, [LOCK_TTL_SEC])
 })
