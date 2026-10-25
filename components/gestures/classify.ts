@@ -66,7 +66,7 @@ export function classifyTrack(track: PointerTrack): GestureAction | null {
   const ady = Math.abs(dy);
   const elapsed = track.end.t - track.start.t;
 
-  if (adx >= SWIPE_AXIS(adx, ady) && adx >= T.SWIPE_MIN_DISTANCE && elapsed <= T.SWIPE_MAX_MS) {
+  if (adx >= ady * T.AXIS_RATIO && adx >= T.SWIPE_MIN_DISTANCE && elapsed <= T.SWIPE_MAX_MS) {
     if (track.start.x <= T.EDGE_WIDTH) return { type: 'toggle-sidebar' };
     // Finger moving left reveals what is to the right, so it is "next".
     return { type: dx < 0 ? 'view-next' : 'view-prev' };
@@ -77,11 +77,6 @@ export function classifyTrack(track: PointerTrack): GestureAction | null {
   }
 
   return null;
-}
-
-// Helper so the horizontal test reads as "adx dominates ady".
-function SWIPE_AXIS(adx: number, ady: number): number {
-  return ady * T.AXIS_RATIO;
 }
 
 // Double-tap state machine. Feed each tap in order; `doubleTap` is true on the second tap of a pair.
