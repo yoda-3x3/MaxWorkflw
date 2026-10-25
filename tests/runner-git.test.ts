@@ -124,7 +124,7 @@ test('prepareWorkspace clones, branches from the default branch, and cleans up',
   })
   assert.equal(ws.branch, 'workflwpro/r1')
   assert.equal(ws.defaultBranch, 'main')
-  assert.equal(ws.dir, '/tmp/fake-root/repo')
+  assert.equal(ws.dir, join('/tmp/fake-root', 'repo'))
 
   const clone = calls.find((c) => c.args.includes('clone'))!
   assert.ok(clone.args.includes('https://github.com/acme/app.git'))
@@ -136,7 +136,7 @@ test('prepareWorkspace clones, branches from the default branch, and cleans up',
   assert.deepEqual(checkout.args, ['checkout', '-B', 'workflwpro/r1', 'origin/main'])
 
   await ws.cleanup()
-  assert.deepEqual(removed, ['/tmp/fake-root'])
+  assert.deepEqual(removed, [join('/tmp/fake-root')])
 })
 
 test('prepareWorkspace reuses an existing remote branch', async () => {
