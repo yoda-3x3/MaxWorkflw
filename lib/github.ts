@@ -1,13 +1,15 @@
 // GitHub access for MaxWorkflw runs.
 //
-// Every operation is scoped to the branch `maxworkflw/<runId>`. The branch is
+// Every operation is scoped to the branch `workflwpro/<runId>`. The branch is
 // created on demand from the repo's default branch. There is no delete and no
 // force-push. Merging is only possible through mergePR, and only when the
-// caller passes `explicit: true`.
+// caller passes `explicit: true`. dispatchRunWorkflow starts a workflow run
+// and does not touch any branch.
 
-export const BRANCH_PREFIX = 'maxworkflw/';
+export const BRANCH_PREFIX = 'workflwpro/';
 
 const API_VERSION = '2022-11-28';
+const DEFAULT_API_BASE = 'https://api.github.com';
 const REQUEST_TIMEOUT_MS = 20_000;
 
 export interface GitHubClientOptions {
@@ -86,15 +88,20 @@ export interface MergePRResult {
 }
 
 /**
- * Validates a run id and returns the branch name for it.
- * Run ids are restricted so they cannot escape the `maxworkflw/` namespace.
+ * Throws PathPolicyError unless the run id is safe to use in a branch name or a
+ * workflow input. Run ids are restricted so they cannot escape the `workflwpro/` namespace.
  */
-export function branchForRun(runId: string): string {
+export function assertRunId(runId: string): string {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/.test(runId)
     || runId.includes('..') || runId.endsWith('.')) {
     throw new PathPolicyError(`invalid run id: ${JSON.stringify(runId)}`);
   }
-  return BRANCH_PREFIX + runId;
+  return runId;
+}
+
+/** Validates a run id and returns the branch name for it. */
+export function branchForRun(runId: string): string {
+  return BRANCH_PREFIX + assertRunId(runId);
 }
 
 function isBlockedSegment(segment: string): boolean {
@@ -150,38 +157,57 @@ function isRetryable(err: unknown): boolean {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-export function createGitHubClient(opts: GitHubClientOptions) {
-  const doFetch = opts.fetch ?? globalThis.fetch;
-  const apiBase = (opts.apiBase ?? 'https://api.github.com').replace(/\/$/, '');
-  const maxAttempts = opts.maxAttempts ?? 3;
-  const retryDelayMs = opts.retryDelayMs ?? 250;
-  const repoPath = `/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(opts.repo)}`;
-
-  async function request<T = any>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
-    const res = await doFetch(apiBase + path, {
+/** One GitHub REST call. Timeouts surface as GitHubError 408. */
+async function githubRequest<T = any>(
+  doFetch: typeof fetch,
+  apiBase: string,
+  token: string,
+  method: 'GET' | 'POST' | 'PUT',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await doFetch(apiBase + path, {
       method,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        Authorization: `Bearer ${token}`,
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': API_VERSION,
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) {
-      let detail = '';
-      try {
-        const data: any = await res.json();
-        detail = data?.message ? `: ${data.message}` : '';
-      } catch {
-        // Response body is not JSON. The status is enough.
-      }
-      throw new GitHubError(res.status, `GitHub ${method} ${path} failed with ${res.status}${detail}`);
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new GitHubError(408, `GitHub ${method} ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
     }
-    if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    throw err;
   }
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const data: any = await res.json();
+      detail = data?.message ? `: ${data.message}` : '';
+    } catch {
+      // Response body is not JSON. The status is enough.
+    }
+    throw new GitHubError(res.status, `GitHub ${method} ${path} failed with ${res.status}${detail}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+export function createGitHubClient(opts: GitHubClientOptions) {
+  const doFetch = opts.fetch ?? globalThis.fetch;
+  const apiBase = (opts.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, '');
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const retryDelayMs = opts.retryDelayMs ?? 250;
+  const repoPath = `/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(opts.repo)}`;
+
+  const request = <T = any>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> =>
+    githubRequest<T>(doFetch, apiBase, opts.token, method, path, body);
 
   /** Returns the sha of the ref, or null if it does not exist. */
   async function getRefSha(branch: string): Promise<string | null> {
@@ -194,7 +220,7 @@ export function createGitHubClient(opts: GitHubClientOptions) {
     }
   }
 
-  /** Creates maxworkflw/<runId> from the default branch if it is missing. Never moves an existing ref. */
+  /** Creates workflwpro/<runId> from the default branch if it is missing. Never moves an existing ref. */
   async function ensureBranch(runId: string): Promise<string> {
     const branch = branchForRun(runId);
     for (let attempt = 1; ; attempt++) {
@@ -312,3 +338,79 @@ export function createGitHubClient(opts: GitHubClientOptions) {
 }
 
 export type GitHubClient = ReturnType<typeof createGitHubClient>;
+
+export interface DispatchRunOptions {
+  /** `owner/name` of the repo that holds the workflow. */
+  repo: string;
+  token: string;
+  /** Workflow file name or numeric id. Defaults to run.yml. */
+  workflow?: string;
+  /** Git ref to run the workflow on. Defaults to main. */
+  ref?: string;
+  /** Passed to the workflow as the `run_id` input. */
+  runId: string;
+  /** Injected for tests. Defaults to global fetch. */
+  fetch?: typeof fetch;
+}
+
+/**
+ * Starts a workflow_dispatch run with `inputs.run_id`. GitHub answers 204 on
+ * success. 404, 403 and 422 are mapped to a GitHubError with a hint about the likely cause.
+ */
+export async function dispatchRunWorkflow(opts: DispatchRunOptions): Promise<void> {
+  assertRunId(opts.runId);
+  const [owner, name, ...rest] = opts.repo.split('/');
+  if (!owner || !name || rest.length > 0) {
+    throw new GitHubError(400, `dispatch repo must be owner/name, got ${JSON.stringify(opts.repo)}`);
+  }
+  const workflow = opts.workflow ?? 'run.yml';
+  const ref = opts.ref ?? 'main';
+  if (workflow === '') throw new GitHubError(400, 'dispatch workflow must not be empty');
+  if (ref === '') throw new GitHubError(400, 'dispatch ref must not be empty');
+
+  const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`
+    + `/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
+  const doFetch = opts.fetch ?? globalThis.fetch;
+  try {
+    await githubRequest(doFetch, DEFAULT_API_BASE, opts.token, 'POST', path, {
+      ref,
+      inputs: { run_id: opts.runId },
+    });
+  } catch (err) {
+    if (!(err instanceof GitHubError)) throw err;
+    const hint = dispatchHint(err.status, opts.repo, workflow, ref);
+    if (!hint) throw err;
+    throw new GitHubError(err.status, `${hint} (${err.message})`);
+  }
+}
+
+function dispatchHint(status: number, repo: string, workflow: string, ref: string): string | null {
+  switch (status) {
+    case 404:
+      return `Workflow "${workflow}" not found in ${repo}, or the token cannot see that repo. Check DISPATCH_REPO and DISPATCH_WORKFLOW.`;
+    case 403:
+      return `Token is not allowed to dispatch workflows in ${repo}. It needs Actions: write permission.`;
+    case 422:
+      return `GitHub rejected the dispatch on ref "${ref}". Check that the ref exists and that ${workflow} declares workflow_dispatch with a run_id input.`;
+    default:
+      return null;
+  }
+}
+
+export interface DispatchConfig {
+  /** Undefined when GITHUB_TOKEN is unset or empty. */
+  token: string | undefined;
+  repo: string;
+  workflow: string;
+  ref: string;
+}
+
+/** Reads dispatch settings from the environment. Missing values fall back to the defaults. */
+export function getDispatchConfig(env: Record<string, string | undefined>): DispatchConfig {
+  return {
+    token: env.GITHUB_TOKEN?.trim() || undefined,
+    repo: env.DISPATCH_REPO || 'yoda-3x3/MaxWorkflw',
+    workflow: env.DISPATCH_WORKFLOW || 'run.yml',
+    ref: env.DISPATCH_REF || 'main',
+  };
+}

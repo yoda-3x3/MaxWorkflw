@@ -13,20 +13,49 @@ const alice = "alice@example.com";
 // Owner keys come from auth: `email:<address>` for magic links, `github:<login>` for OAuth.
 const aliceId = `email:${alice}`;
 
+const CRON_SECRET_VALUE = "test-cron-secret-value";
+
 let saved: Record<string, string | undefined>;
+// Mocked dispatch: dispatchRun reaches GitHub through global fetch (workflow_dispatch with
+// inputs.run_id). Every outbound call is recorded and never sent.
+let dispatched: Array<{ url: string; authorization: string | null; body: string }>;
+const realFetch = globalThis.fetch;
+
+/** Dispatch calls that carry this run id (URL or body). */
+function dispatchedFor(runId: string) {
+  return dispatched.filter((d) => d.url.includes(runId) || d.body.includes(runId));
+}
+
+/** dispatchRun starts after the response (after() runs inline in tests), so let it settle. */
+async function settle(ms = 20) {
+  await new Promise((r) => setTimeout(r, ms));
+}
 
 beforeEach(() => {
   saved = {
     SESSION_SECRET: process.env.SESSION_SECRET,
     ALLOWED_USERS: process.env.ALLOWED_USERS,
     GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    CRON_SECRET: process.env.CRON_SECRET,
   };
   process.env.SESSION_SECRET = SESSION_SECRET_VALUE;
   process.env.ALLOWED_USERS = `${alice},bob`;
-  delete process.env.GITHUB_TOKEN;
+  process.env.CRON_SECRET = CRON_SECRET_VALUE;
+  process.env.GITHUB_TOKEN = "test-github-token";
+
+  dispatched = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    dispatched.push({
+      url: String(input),
+      authorization: new Headers(init?.headers).get("authorization"),
+      body: typeof init?.body === "string" ? init.body : "",
+    });
+    return new Response(JSON.stringify({ accepted: true }), { status: 202, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
 });
 
 afterEach(() => {
+  globalThis.fetch = realFetch;
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -124,6 +153,63 @@ describe("run ownership", () => {
       params: Promise.resolve({ id: runId }),
     });
     assert.equal(res.status, 404);
+    assert.deepEqual(dispatched, []);
+  });
+
+  test("the owner's kick of an active run stale for over 90s dispatches the run id", async () => {
+    // seedRun sets updatedAt: 1, which is far older than 90s.
+    const runId = await seedRun();
+    const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 202);
+    assert.deepEqual(await res.json(), { status: "waiting_approval", kicked: true });
+    await settle();
+    assert.equal(dispatchedFor(runId).length, 1);
+  });
+
+  test("a kick within 90s of the last update answers kicked:false and dispatches nothing", async () => {
+    const runId = await seedRun({ updatedAt: Date.now() - 30_000 });
+    const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { status: "waiting_approval", kicked: false });
+    await settle();
+    assert.equal(dispatchedFor(runId).length, 0);
+  });
+
+  test("a kick just past 90s since the last update does dispatch", async () => {
+    const runId = await seedRun({ updatedAt: Date.now() - 91_000 });
+    const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 202);
+    await settle();
+    assert.equal(dispatchedFor(runId).length, 1);
+  });
+
+  test("the owner's kick of a finished run answers kicked:false and dispatches nothing", async () => {
+    const runId = await seedRun({ status: "done" });
+    const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { status: "done", kicked: false });
+    assert.deepEqual(dispatched, []);
+  });
+
+  test("the cron secret alone cannot kick a user route (wrong path) and gets 401", async () => {
+    const runId = await seedRun();
+    const res = await kickRun(
+      new Request(`https://app.test/api/runs/${runId}/kick`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${CRON_SECRET_VALUE}` },
+      }),
+      { params: Promise.resolve({ id: runId }) },
+    );
+    assert.equal(res.status, 401);
+    assert.deepEqual(dispatched, []);
   });
 });
 
@@ -193,6 +279,43 @@ describe("approval decide", () => {
     const [queued] = await getRunStore().drainDecisions(runId, 10);
     assert.equal(queued.decision, "denied");
   });
+
+  test("the decision is enqueued before the step dispatch", async () => {
+    const runId = await seedRun();
+    const store = getRunStore();
+    const order: string[] = [];
+    const realEnqueue = store.enqueueDecision.bind(store);
+    store.enqueueDecision = async (id, decision) => {
+      order.push("enqueue");
+      return realEnqueue(id, decision);
+    };
+    const realFetchStub = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (String(input).includes("/dispatches") && body.includes(runId)) order.push("dispatch");
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    try {
+      const res = await decide(post(url(runId, `${runId}-pending`), await aliceCookie(), { decision: "approve" }), {
+        params: Promise.resolve({ id: runId, approvalId: `${runId}-pending` }),
+      });
+      assert.equal(res.status, 202);
+      await settle();
+      assert.deepEqual(order, ["enqueue", "dispatch"]);
+    } finally {
+      globalThis.fetch = realFetchStub;
+      store.enqueueDecision = realEnqueue;
+      await store.drainDecisions(runId, 10);
+    }
+  });
+
+  test("a non-owner's decide dispatches nothing", async () => {
+    const runId = await seedRun();
+    await decide(post(url(runId, `${runId}-pending`), await bobCookie(), { decision: "approve" }), {
+      params: Promise.resolve({ id: runId, approvalId: `${runId}-pending` }),
+    });
+    assert.deepEqual(dispatched, []);
+  });
 });
 
 describe("merge", () => {
@@ -219,6 +342,27 @@ describe("merge", () => {
       params: Promise.resolve({ id: runId }),
     });
     assert.equal(res.status, 404);
+  });
+
+  test("confirm: false gets 400", async () => {
+    const runId = await seedRun(withPr);
+    const res = await merge(post(url(runId), await aliceCookie(), { confirm: false }), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("the cron secret cannot merge (wrong path) and gets 401", async () => {
+    const runId = await seedRun(withPr);
+    const res = await merge(
+      new Request(url(runId), {
+        method: "POST",
+        headers: { authorization: `Bearer ${CRON_SECRET_VALUE}`, "content-type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      }),
+      { params: Promise.resolve({ id: runId }) },
+    );
+    assert.equal(res.status, 401);
   });
 
   test("the owner with confirm but no PR gets 409", async () => {

@@ -98,8 +98,8 @@ test('validateRepoPath throws PathPolicyError for blocked paths', () => {
   assert.equal(validateRepoPath('src/a.ts'), 'src/a.ts');
 });
 
-test('branchForRun uses the maxworkflw/ namespace and rejects bad run ids', () => {
-  assert.equal(branchForRun('run-42'), 'maxworkflw/run-42');
+test('branchForRun uses the workflwpro/ namespace and rejects bad run ids', () => {
+  assert.equal(branchForRun('run-42'), 'workflwpro/run-42');
   for (const id of ['', '../main', 'a/b', 'a..b', 'run.', '-x y', 'a\nb']) {
     assert.throws(() => branchForRun(id), PathPolicyError, `expected run id ${JSON.stringify(id)} rejected`);
   }
@@ -123,7 +123,7 @@ test('invalid run id makes no network calls', async () => {
   assert.equal(calls.length, 0);
 });
 
-test('ensureBranch creates maxworkflw/<runId> from the default branch when missing', async () => {
+test('ensureBranch creates workflwpro/<runId> from the default branch when missing', async () => {
   let created: Call | undefined;
   const { fetchFn } = mockFetch([
     repoRoute,
@@ -135,17 +135,17 @@ test('ensureBranch creates maxworkflw/<runId> from the default branch when missi
       }
       return undefined;
     },
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents?ref=maxworkflw%2Frun1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents?ref=workflwpro%2Frun1'
       ? { status: 200, json: [] }
       : undefined),
   ]);
   await client(fetchFn).listFiles('run1');
-  assert.deepEqual(created?.body, { ref: 'refs/heads/maxworkflw/run1', sha: 'base-sha' });
+  assert.deepEqual(created?.body, { ref: 'refs/heads/workflwpro/run1', sha: 'base-sha' });
 });
 
 test('ensureBranch does not recreate an existing branch', async () => {
   const { fetchFn, calls } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
     (c) => (c.method === 'GET' && c.url.startsWith('/repos/acme/app/contents?ref=')
@@ -163,7 +163,7 @@ test('ensureBranch retries after a 409 race and succeeds once the branch exists'
     repoRoute,
     mainRefRoute,
     (c) => {
-      if (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1') {
+      if (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1') {
         refChecks++;
         // Missing on the first check, present after the other writer's create lands.
         return refChecks === 1 ? { status: 404 } : { status: 200, json: { object: { sha: 'x' } } };
@@ -197,10 +197,10 @@ test('ensureBranch gives up after maxAttempts 422s', async () => {
 
 test('writeFile writes only to the run branch and sends base64 content', async () => {
   const { fetchFn, calls } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents/src/a.ts?ref=maxworkflw%2Frun1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents/src/a.ts?ref=workflwpro%2Frun1'
       ? { status: 200, json: { type: 'file', sha: 'old-sha' } }
       : undefined),
     (c) => (c.method === 'PUT' && c.url === '/repos/acme/app/contents/src/a.ts'
@@ -210,18 +210,18 @@ test('writeFile writes only to the run branch and sends base64 content', async (
   const res = await client(fetchFn).writeFile('run1', 'src/a.ts', 'hello');
   assert.deepEqual(res, { path: 'src/a.ts', sha: 'new-sha', commit: 'commit-sha' });
   const put = calls.find((c) => c.method === 'PUT');
-  assert.equal(put?.body.branch, 'maxworkflw/run1');
+  assert.equal(put?.body.branch, 'workflwpro/run1');
   assert.equal(put?.body.sha, 'old-sha');
   assert.equal(Buffer.from(put?.body.content, 'base64').toString('utf8'), 'hello');
   // Writes never target any other branch.
   for (const c of calls) {
-    assert.doesNotMatch(c.url, /ref=(?!maxworkflw%2F)/);
+    assert.doesNotMatch(c.url, /ref=(?!workflwpro%2F)/);
   }
 });
 
 test('writeFile creates a new file without a sha', async () => {
   const { fetchFn, calls } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
     (c) => (c.method === 'PUT'
@@ -237,7 +237,7 @@ test('writeFile retries on 409 and re-reads the sha', async () => {
   let puts = 0;
   let gets = 0;
   const { fetchFn } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
     (c) => {
@@ -263,10 +263,10 @@ test('writeFile retries on 409 and re-reads the sha', async () => {
 
 test('readFile decodes base64 content from the run branch', async () => {
   const { fetchFn } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents/README.md?ref=maxworkflw%2Frun1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents/README.md?ref=workflwpro%2Frun1'
       ? { status: 200, json: { type: 'file', encoding: 'base64', sha: 'abc', content: Buffer.from('hi there').toString('base64') } }
       : undefined),
   ]);
@@ -276,10 +276,10 @@ test('readFile decodes base64 content from the run branch', async () => {
 
 test('listFiles hides blocked entries such as .env files', async () => {
   const { fetchFn } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents/src?ref=maxworkflw%2Frun1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/contents/src?ref=workflwpro%2Frun1'
       ? {
           status: 200,
           json: [
@@ -295,7 +295,7 @@ test('listFiles hides blocked entries such as .env files', async () => {
 
 test('openPR opens a PR from the run branch into the default branch', async () => {
   const { fetchFn, calls } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
     repoRoute,
@@ -306,12 +306,12 @@ test('openPR opens a PR from the run branch into the default branch', async () =
   const pr = await client(fetchFn).openPR('run1', { title: 'T', body: 'B' });
   assert.deepEqual(pr, { number: 7, url: 'https://github.com/acme/app/pull/7', state: 'open' });
   const post = calls.find((c) => c.method === 'POST' && c.url.endsWith('/pulls'));
-  assert.deepEqual(post?.body, { title: 'T', body: 'B', head: 'maxworkflw/run1', base: 'main' });
+  assert.deepEqual(post?.body, { title: 'T', body: 'B', head: 'workflwpro/run1', base: 'main' });
 });
 
 test('openPR returns the existing open PR on 422', async () => {
   const { fetchFn } = mockFetch([
-    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/maxworkflw/run1'
+    (c) => (c.method === 'GET' && c.url === '/repos/acme/app/git/ref/heads/workflwpro/run1'
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
     repoRoute,
@@ -337,7 +337,7 @@ test('mergePR refuses to run without explicit: true and makes no calls', async (
 test('mergePR merges only a same-repo PR from the run branch', async () => {
   const { fetchFn, calls } = mockFetch([
     (c) => (c.method === 'GET' && c.url === '/repos/acme/app/pulls/7'
-      ? { status: 200, json: { head: { ref: 'maxworkflw/run1', repo: { full_name: 'acme/app' } } } }
+      ? { status: 200, json: { head: { ref: 'workflwpro/run1', repo: { full_name: 'acme/app' } } } }
       : undefined),
     (c) => (c.method === 'PUT' && c.url === '/repos/acme/app/pulls/7/merge'
       ? { status: 200, json: { merged: true, sha: 'merge-sha' } }
@@ -354,7 +354,7 @@ test('mergePR rejects a PR from another branch or a fork', async () => {
       ? { status: 200, json: { head: { ref: 'main', repo: { full_name: 'acme/app' } } } }
       : undefined),
     (c) => (c.method === 'GET' && c.url === '/repos/acme/app/pulls/9'
-      ? { status: 200, json: { head: { ref: 'maxworkflw/run1', repo: { full_name: 'mallory/app' } } } }
+      ? { status: 200, json: { head: { ref: 'workflwpro/run1', repo: { full_name: 'mallory/app' } } } }
       : undefined),
   ]);
   const gh = client(fetchFn);
@@ -367,7 +367,7 @@ test('no operation ever issues DELETE or PATCH', async () => {
   const { fetchFn, calls } = mockFetch([
     repoRoute,
     mainRefRoute,
-    (c) => (c.method === 'GET' && c.url.includes('/git/ref/heads/maxworkflw/run1')
+    (c) => (c.method === 'GET' && c.url.includes('/git/ref/heads/workflwpro/run1')
       ? { status: 200, json: { object: { sha: 'x' } } }
       : undefined),
     (c) => (c.method === 'GET' && c.url.includes('/contents')

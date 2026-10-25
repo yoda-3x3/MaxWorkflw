@@ -1,41 +1,16 @@
 # dependencies
 node_modules/
-.pnp
-.pnp.*
 
-# next.js / build output
+# next.js build output
 .next/
-out/
-build/
-dist/
-next-env.d.ts
 
-# tests and coverage
-coverage/
-
-# typescript
-*.tsbuildinfo
-
-# env files: never commit secrets (.env.example is the template)
+# env files: never commit secrets
 .env
 .env.*
 !.env.example
 
-# vercel
-.vercel
-
-# logs and OS/editor noise
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+# typescript
+*.tsbuildinfo
 
 # attachments shared with the team (never committed)
 .wdash/attachments/
-.env*
-node_modules/
-.next/
