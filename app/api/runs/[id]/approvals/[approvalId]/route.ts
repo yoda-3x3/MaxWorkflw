@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getCaller, json, scheduleKick } from "@/lib/session";
+import { dispatchRun, getCaller, json, runAfterResponse } from "@/lib/session";
 import { getRunStore } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -40,6 +40,6 @@ export async function POST(req: Request, { params }: Ctx) {
     note: note || undefined,
     decidedAt: Date.now(),
   });
-  scheduleKick(new URL(req.url).origin, run.id);
+  runAfterResponse(() => dispatchRun(run.id));
   return json({ queued: true }, 202);
 }
