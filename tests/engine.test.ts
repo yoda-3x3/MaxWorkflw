@@ -1,65 +1,66 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createMemoryBackend, createRunStore } from '../lib/store'
-import { createMockClaude, textReply, toolReply, type MockRequest } from '../lib/claude'
-import { validateRepoPath } from '../lib/github'
-import { createRun, runStep, step, type EngineDeps, type EngineGitHub, type EngineStore } from '../lib/engine'
+import { createMockLlm, type MockCall, type MockHandler } from '../lib/llm'
+import { branchForRun } from '../lib/github'
+import { createRun, runStep, step, type EngineDeps, type EngineStore, type EngineWorkspace } from '../lib/engine'
 import { AGENT_STALL_MS, RUN_DEADLINE_MS, type ApprovalDecision, type Run } from '../lib/types'
 
 // Everything here is mocked. The store is the real one on the in-memory backend,
-// Claude is the mock client, and GitHub is a fake that applies the real path policy.
+// the model is the mock Llm, and GitHub only opens PRs. Agents never touch files
+// here: a fake workspace records the commits the engine asks for.
 
 const models = { orchestrator: 'opus-test', lead: 'sonnet-test', worker: 'haiku-test' }
 
-const isPlanner = (req: MockRequest) => (req.system ?? '').startsWith('You are the Orchestrator of MaxWorkflw')
-const isFinal = (req: MockRequest) => (req.system ?? '').startsWith('You are the Orchestrator writing the final report')
-const isLead = (req: MockRequest) => (req.system ?? '').startsWith('You are a lead in MaxWorkflw')
-const briefOf = (req: MockRequest) => (typeof req.messages[0].content === 'string' ? req.messages[0].content : '')
-const planReply = (units: unknown[]) => textReply(JSON.stringify({ summary: 'plan summary', units }))
+const isPlanner = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator of MaxWorkflw')
+const isFinal = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator writing the final report')
+const isLead = (c: MockCall) => c.kind === 'work' && (c.req.system ?? '').startsWith('You are a lead in MaxWorkflw')
+const promptOf = (c: MockCall) => c.req.prompt
+const planReply = (units: unknown[]) => ({ text: JSON.stringify({ summary: 'plan summary', units }) })
+const approvalFor = (rule: 1 | 2 | 3 | 4, request: string) => ({ text: '', approval: { rule, request } })
 
 function fakeGithub() {
-  const files = new Map<string, string>()
   const prs: { runId: string; title: string; body: string }[] = []
-  const github = (_repo: string) =>
-    ({
-      async listFiles() {
-        return [...files.keys()].map((path) => ({ name: path, path, type: 'file', size: 1 }))
-      },
-      async readFile(_runId: string, path: string) {
-        validateRepoPath(path)
-        return { path, content: files.get(path) ?? '', sha: 'sha' }
-      },
-      async writeFile(_runId: string, path: string, content: string) {
-        validateRepoPath(path)
-        files.set(path, content)
-        return { path, sha: 'sha', commit: 'c' }
-      },
-      async openPR(runId: string, args: { title: string; body: string }) {
-        prs.push({ runId, ...args })
-        return { number: 7, url: 'https://github.test/o/r/pull/7', state: 'open' }
-      },
-    }) as unknown as EngineGitHub
-  return { github, files, prs }
+  const github = (_repo: string) => ({
+    async openPR(runId: string, args: { title: string; body: string }) {
+      prs.push({ runId, ...args })
+      return { number: 7, url: 'https://github.test/o/r/pull/7', state: 'open' }
+    },
+  })
+  return { github, prs }
 }
 
-function setup(handler: (req: MockRequest) => ReturnType<typeof textReply> | Promise<ReturnType<typeof textReply>>) {
+function setup(handler: MockHandler) {
   const store = createRunStore(createMemoryBackend())
-  const claude = createMockClaude(handler)
+  const llm = createMockLlm(handler)
   const gh = fakeGithub()
   let t = 1_000
-  const deps: Partial<EngineDeps> = { claude, store, github: gh.github, models, now: () => t }
+  const deps: Partial<EngineDeps> = { llm, store, github: gh.github, models, now: () => t }
   return {
     store,
-    claude,
+    llm,
     gh,
     deps,
     setNow(v: number) {
       t = v
     },
     async current(id: string): Promise<Run> {
-      return (await store.getRunForEngine(id))!;
+      return (await store.getRunForEngine(id))!
     },
   }
+}
+
+// A workspace that records commits. commit() can be scripted to return false or throw.
+function fakeWorkspace(commit: (message: string) => Promise<boolean> = async () => true) {
+  const commits: string[] = []
+  const ws: EngineWorkspace = {
+    dir: '/work/repo',
+    async commit(message) {
+      commits.push(message)
+      return commit(message)
+    },
+  }
+  return { ws, commits }
 }
 
 async function drain(id: string, deps: Partial<EngineDeps>, max = 20): Promise<string[]> {
@@ -88,7 +89,7 @@ const FULL_UNITS = [
 ]
 
 test('createRun builds a queued run, saves it, and returns it', async () => {
-  const env = setup(() => textReply('x'))
+  const env = setup(() => ({ text: 'x' }))
   const run = await createRun({ ownerId: 'me', task: 'ship it', repo: 'o/r' }, env.deps)
   assert.equal(run.status, 'queued')
   assert.equal(run.ownerId, 'me')
@@ -100,13 +101,13 @@ test('createRun builds a queued run, saves it, and returns it', async () => {
 
 test('full run: plan, parallel wave, lead integration, dependent unit, final report', async () => {
   const leadPrompts: string[] = []
-  const env = setup((req) => {
-    if (isPlanner(req)) return planReply(FULL_UNITS)
-    if (isFinal(req)) return textReply('FINAL REPORT: all good')
-    const brief = briefOf(req)
-    if (isLead(req)) leadPrompts.push(brief)
+  const env = setup((c) => {
+    if (isPlanner(c)) return planReply(FULL_UNITS)
+    if (isFinal(c)) return { text: 'FINAL REPORT: all good' }
+    const brief = promptOf(c)
+    if (isLead(c)) leadPrompts.push(brief)
     const marker = brief.match(/CONTEXT: (lead A integrates|do w\d|do [bc])/)?.[1] ?? 'unknown'
-    return textReply(`STATUS: done for ${marker}`)
+    return { text: `STATUS: done for ${marker}` }
   })
   const run = await createRun({ ownerId: 'me', task: 'ship it' }, env.deps)
 
@@ -127,9 +128,9 @@ test('full run: plan, parallel wave, lead integration, dependent unit, final rep
   assert.match(leadPrompts[0], /STATUS: done for do w2/)
 
   // Wave 2 ran both workers and the standalone unit C together: haiku, haiku, sonnet.
-  const agentCalls = env.claude.requests.filter((r) => !isPlanner(r) && !isFinal(r))
+  const agentCalls = env.llm.calls.filter((c) => c.kind === 'work')
   assert.deepEqual(
-    agentCalls.slice(0, 3).map((r) => r.model),
+    agentCalls.slice(0, 3).map((c) => c.req.model),
     [models.worker, models.worker, models.lead],
   )
 })
@@ -142,7 +143,7 @@ test('over-budget plan is truncated to the agent cap and the cut is logged', asy
     deps: [],
     workers: Array.from({ length: 6 }, (_, i) => ({ id: `${id}-${i}`, title: `${id}${i}`, brief: 'w', deps: [] })),
   })
-  const env = setup((req) => (isPlanner(req) ? planReply([big('a'), big('b'), big('c')]) : textReply('x')))
+  const env = setup((c) => (isPlanner(c) ? planReply([big('a'), big('b'), big('c')]) : { text: 'x' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   assert.equal((await step(run.id, env.deps)).action, 'planned')
 
@@ -154,12 +155,12 @@ test('over-budget plan is truncated to the agent cap and the cut is logged', asy
 
 test('planner reply that fails validation is retried once, then the run proceeds', async () => {
   let plans = 0
-  const env = setup((req) => {
-    if (isPlanner(req)) {
+  const env = setup((c) => {
+    if (isPlanner(c)) {
       plans++
-      return plans === 1 ? textReply('sorry, no JSON today') : planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
+      return plans === 1 ? { text: 'sorry, no JSON today' } : planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
     }
-    return textReply('STATUS: done')
+    return { text: 'STATUS: done' }
   })
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   const actions = await drain(run.id, env.deps)
@@ -168,7 +169,7 @@ test('planner reply that fails validation is retried once, then the run proceeds
 })
 
 test('planner failing twice fails the run with a clear message', async () => {
-  const env = setup(() => textReply('still no JSON'))
+  const env = setup(() => ({ text: 'still no JSON' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   const actions = await drain(run.id, env.deps)
   assert.deepEqual(actions, ['replan', 'failed'])
@@ -178,19 +179,19 @@ test('planner failing twice fails the run with a clear message', async () => {
 })
 
 test('approval pauses only the asking agent; an approved decision resumes it', async () => {
-  const env = setup((req) => {
-    if (isPlanner(req)) {
+  const env = setup((c) => {
+    if (isPlanner(c)) {
       return planReply([
         { id: 'x', title: 'X', brief: 'do x', deps: [] },
         { id: 'y', title: 'Y', brief: 'do y', deps: [] },
       ])
     }
-    if (isFinal(req)) return textReply('final')
-    const brief = briefOf(req)
+    if (isFinal(c)) return { text: 'final' }
+    const brief = promptOf(c)
     if (brief.includes('CONTEXT: do x') && !brief.includes('APPROVAL DECISION')) {
-      return toolReply([{ id: 't1', name: 'request_approval', input: { rule: 1, request: 'ship to prod?' } }])
+      return approvalFor(1, 'ship to prod?')
     }
-    return textReply(brief.includes('CONTEXT: do x') ? 'x deployed' : 'y done')
+    return { text: brief.includes('CONTEXT: do x') ? 'x deployed' : 'y done' }
   })
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
 
@@ -209,7 +210,7 @@ test('approval pauses only the asking agent; an approved decision resumes it', a
   assert.equal(mid.approvals[0].kind, 'production_deploy')
 
   // The owner's decision goes through the store queue. The next step drains it and resumes X only.
-  const yCallsBefore = env.claude.requests.filter((r) => briefOf(r).includes('CONTEXT: do y')).length
+  const yCallsBefore = env.llm.calls.filter((c) => promptOf(c).includes('CONTEXT: do y')).length
   const decision: ApprovalDecision = {
     id: 'd1',
     runId: run.id,
@@ -219,7 +220,7 @@ test('approval pauses only the asking agent; an approved decision resumes it', a
   }
   await env.store.enqueueDecision(run.id, decision)
   assert.deepEqual(await drain(run.id, env.deps), ['wave', 'finalized'])
-  assert.equal(env.claude.requests.filter((r) => briefOf(r).includes('CONTEXT: do y')).length, yCallsBefore)
+  assert.equal(env.llm.calls.filter((c) => promptOf(c).includes('CONTEXT: do y')).length, yCallsBefore)
 
   const end = await env.current(run.id)
   assert.equal(end.approvals[0].status, 'approved')
@@ -230,13 +231,11 @@ test('approval pauses only the asking agent; an approved decision resumes it', a
 })
 
 test('a denied approval resumes the agent with a do-not-act instruction', async () => {
-  const env = setup((req) => {
-    if (isPlanner(req)) return planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
-    if (isFinal(req)) return textReply('final')
-    if (!briefOf(req).includes('APPROVAL DECISION')) {
-      return toolReply([{ id: 't1', name: 'request_approval', input: { rule: 4, request: 'spend more' } }])
-    }
-    return textReply('STATUS: blocked, approval denied')
+  const env = setup((c) => {
+    if (isPlanner(c)) return planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
+    if (isFinal(c)) return { text: 'final' }
+    if (!promptOf(c).includes('APPROVAL DECISION')) return approvalFor(4, 'spend more')
+    return { text: 'STATUS: blocked, approval denied' }
   })
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   await step(run.id, env.deps)
@@ -261,23 +260,23 @@ test('a denied approval resumes the agent with a do-not-act instruction', async 
 
 test('a failing agent gets one retry, then fails; its dependents are blocked and the run still finishes', async () => {
   let fCalls = 0
-  const env = setup((req) => {
-    if (isPlanner(req)) {
+  const env = setup((c) => {
+    if (isPlanner(c)) {
       return planReply([
         { id: 'f', title: 'F', brief: 'do f', deps: [] },
         { id: 'g', title: 'G', brief: 'do g', deps: ['f'] },
         { id: 'h', title: 'H', brief: 'do h', deps: [] },
       ])
     }
-    if (isFinal(req)) {
-      assert.match(String(req.messages[0].content), /FAILED: model overloaded/)
-      return textReply('final with failures')
+    if (isFinal(c)) {
+      assert.match(promptOf(c), /FAILED: model overloaded/)
+      return { text: 'final with failures' }
     }
-    if (briefOf(req).includes('CONTEXT: do f')) {
+    if (promptOf(c).includes('CONTEXT: do f')) {
       fCalls++
       throw new Error('model overloaded')
     }
-    return textReply('STATUS: done')
+    return { text: 'STATUS: done' }
   })
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
 
@@ -297,7 +296,7 @@ test('a failing agent gets one retry, then fails; its dependents are blocked and
 })
 
 test('a run past its 24h deadline fails with a clear message', async () => {
-  const env = setup(() => textReply('x'))
+  const env = setup(() => ({ text: 'x' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   env.setNow(run.deadlineAt + 1)
   const r = await step(run.id, env.deps)
@@ -308,15 +307,15 @@ test('a run past its 24h deadline fails with a clear message', async () => {
 })
 
 test('a held lock makes the step a no-op', async () => {
-  const env = setup(() => textReply('x'))
+  const env = setup(() => ({ text: 'x' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   assert.ok(await env.store.acquireRunLock(run.id))
   assert.deepEqual(await step(run.id, env.deps), { runId: run.id, action: 'locked', more: false })
-  assert.equal(env.claude.requests.length, 0)
+  assert.equal(env.llm.calls.length, 0)
 })
 
 test('the lock is released after a step, even when the step throws', async () => {
-  const env = setup(() => textReply('x'))
+  const env = setup(() => ({ text: 'x' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   // Planner errors are caught inside the step. A store failure is not, so it escapes.
   const failingStore: EngineStore = Object.assign(Object.create(env.store), {
@@ -328,11 +327,18 @@ test('the lock is released after a step, even when the step throws', async () =>
   assert.ok(await env.store.acquireRunLock(run.id), 'lock must be free again')
 })
 
+test('a step with no Llm configured fails before it touches the run', async () => {
+  const env = setup(() => ({ text: 'x' }))
+  const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
+  await assert.rejects(step(run.id, { store: env.store, models, now: () => 1 }), /no Llm/)
+  assert.ok(await env.store.acquireRunLock(run.id), 'lock was never taken')
+})
+
 test('an agent stuck in running past the timeout is reset and runs again', async () => {
-  const env = setup((req) => {
-    if (isPlanner(req)) return planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
-    if (isFinal(req)) return textReply('final')
-    return textReply('STATUS: done')
+  const env = setup((c) => {
+    if (isPlanner(c)) return planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
+    if (isFinal(c)) return { text: 'final' }
+    return { text: 'STATUS: done' }
   })
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   assert.equal((await step(run.id, env.deps)).action, 'planned')
@@ -352,59 +358,78 @@ test('an agent stuck in running past the timeout is reset and runs again', async
   assert.equal(after.attempts, 2)
 })
 
-test('repo run: writes go to the run branch, a blocked path is refused, and a PR opens', async () => {
-  const workerTurns: Array<ReturnType<typeof toolReply> | ReturnType<typeof textReply>> = [
-    toolReply([{ id: 'tu1', name: 'write_file', input: { path: '.env', content: 'SECRET=1' } }]),
-    toolReply([{ id: 'tu2', name: 'write_file', input: { path: 'src/a.ts', content: 'export {}' } }]),
-    textReply('STATUS: done\nCHANGED: src/a.ts'),
-  ]
-  const env = setup((req) => {
-    if (isPlanner(req)) return planReply([{ id: 'w', title: 'W', brief: 'do w', deps: [] }])
-    if (isFinal(req)) return textReply('final')
-    return workerTurns.shift() ?? textReply('STATUS: done')
+test('repo run: agents work in the checkout, each agent is committed, and a PR opens on the run branch', async () => {
+  const { ws, commits } = fakeWorkspace()
+  const env = setup((c) => {
+    if (isPlanner(c)) return planReply([{ id: 'w', title: 'W', brief: 'do w', deps: [] }])
+    if (isFinal(c)) return { text: 'final' }
+    return { text: 'STATUS: done\nCHANGED: src/a.ts' }
   })
   const run = await createRun({ ownerId: 'me', task: 't', repo: 'o/r' }, env.deps)
-  await drain(run.id, env.deps)
+  await drain(run.id, { ...env.deps, workspace: ws })
 
-  assert.deepEqual([...env.gh.files.keys()], ['src/a.ts'])
-  const toolResults = env.claude.requests
-    .flatMap((r) => (Array.isArray(r.messages[r.messages.length - 1].content) ? (r.messages[r.messages.length - 1].content as Array<{ content?: string; is_error?: boolean }>) : []))
-    .filter((b) => b.is_error)
-    .map((b) => String(b.content))
-  assert.ok(toolResults.some((c) => /rejected/.test(c)), 'the .env write comes back as an error result')
-
-  const workerCall = env.claude.requests.find((r) => r.tools?.some((t) => t.name === 'write_file'))!
-  assert.ok(workerCall.tools!.some((t) => t.name === 'request_approval'))
+  const workCalls = env.llm.calls.filter((c) => c.kind === 'work')
+  assert.ok(workCalls.length > 0)
+  assert.ok(workCalls.every((c) => c.kind === 'work' && c.req.cwd === '/work/repo'), 'agents run in the checkout')
+  assert.deepEqual(commits, ['workflwpro: a1 W'])
 
   const end = await env.current(run.id)
   assert.equal(end.status, 'done')
-  assert.equal(end.branch, `maxworkflw/${run.id}`)
+  assert.equal(end.branch, branchForRun(run.id))
   assert.equal(end.prUrl, 'https://github.test/o/r/pull/7')
   assert.equal(end.prNumber, 7)
   assert.equal(env.gh.prs.length, 1)
   assert.equal(env.gh.prs[0].runId, run.id)
 })
 
-test('a repo run with no writes opens no PR', async () => {
-  const env = setup((req) => {
-    if (isPlanner(req)) return planReply([{ id: 'w', title: 'W', brief: 'do w', deps: [] }])
-    if (isFinal(req)) return textReply('final')
-    return textReply('STATUS: done, nothing to change')
+test('a repo run where nothing was committed opens no PR', async () => {
+  const { ws } = fakeWorkspace(async () => false)
+  const env = setup((c) => {
+    if (isPlanner(c)) return planReply([{ id: 'w', title: 'W', brief: 'do w', deps: [] }])
+    if (isFinal(c)) return { text: 'final' }
+    return { text: 'STATUS: done, nothing to change' }
   })
   const run = await createRun({ ownerId: 'me', task: 't', repo: 'o/r' }, env.deps)
-  await drain(run.id, env.deps)
+  await drain(run.id, { ...env.deps, workspace: ws })
   assert.equal(env.gh.prs.length, 0)
-  assert.equal((await env.current(run.id)).prUrl, undefined)
+  const end = await env.current(run.id)
+  assert.equal(end.prUrl, undefined)
+  assert.equal(end.branch, undefined)
+})
+
+test('a commit that throws fails that attempt, and the retry commits the work', async () => {
+  let fail = true
+  const { ws, commits } = fakeWorkspace(async () => {
+    if (fail) {
+      fail = false
+      throw new Error('push rejected')
+    }
+    return true
+  })
+  const env = setup((c) => {
+    if (isPlanner(c)) return planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }])
+    if (isFinal(c)) return { text: 'final' }
+    return { text: 'STATUS: done' }
+  })
+  const run = await createRun({ ownerId: 'me', task: 't', repo: 'o/r' }, env.deps)
+  const actions = await drain(run.id, { ...env.deps, workspace: ws })
+  assert.deepEqual(actions, ['planned', 'wave', 'wave', 'finalized'])
+  assert.equal(commits.length, 2)
+
+  const x = (await env.current(run.id)).agents.find((a) => a.title === 'X')!
+  assert.equal(x.status, 'done')
+  assert.equal(x.attempts, 2)
+  assert.equal(env.gh.prs.length, 1)
 })
 
 test('runStep returns only the more flag', async () => {
-  const env = setup((req) => (isPlanner(req) ? planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }]) : textReply('ok')))
+  const env = setup((c) => (isPlanner(c) ? planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }]) : { text: 'ok' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   assert.deepEqual(await runStep(run.id, env.deps), { more: true })
 })
 
 test('a save that fails after the plan is attached rolls back, so the retry plans once with no duplicate agents', async () => {
-  const env = setup((req) => (isPlanner(req) ? planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }]) : textReply('ok')))
+  const env = setup((c) => (isPlanner(c) ? planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }]) : { text: 'ok' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
 
   let failOnce = true
