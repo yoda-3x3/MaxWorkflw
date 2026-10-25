@@ -1,25 +1,30 @@
-import { isCronAuthorized, json, kickStep, runAfterResponse } from "@/lib/session";
+import { dispatchRun, isCronAuthorized, json, runAfterResponse } from "@/lib/session";
 import { getRunStore } from "@/lib/store";
+import { selectStale } from "./select";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-/** Caps the fan-out per invocation. The next cron tick picks up anything left over. */
-const MAX_KICKS = 20;
+/** How many active run ids to read per tick before filtering for stale ones. */
+const SCAN_LIMIT = 500;
 
 /**
- * Backup driver for stalled runs (Vercel cron, Bearer CRON_SECRET). Re-kicks every active run.
- * Steps are idempotent under the run lock, so a run that is already progressing just answers 409.
+ * Backup driver for stalled runs (Vercel cron, Bearer CRON_SECRET). Dispatches the oldest
+ * active runs that have not been updated recently. See select.ts for the rules.
  */
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) return json({ error: "unauthorized" }, 401);
 
-  const ids = await getRunStore().listActiveRunIds(MAX_KICKS);
-  const origin = new URL(req.url).origin;
-  // Each kick awaits only the step route's 202, so waiting on all of them inside after() is cheap.
+  const store = getRunStore();
+  const ids = await store.listActiveRunIds(SCAN_LIMIT);
+  const runs = await Promise.all(ids.map((id) => store.getRunForEngine(id)));
+  const stale = selectStale(runs, Date.now());
+
+  // dispatchRun never throws, so allSettled only keeps the rest going if one ever rejects.
   runAfterResponse(async () => {
-    await Promise.allSettled(ids.map((id) => kickStep(origin, id)));
+    await Promise.allSettled(stale.map((run) => dispatchRun(run.id)));
   });
-  return json({ kicked: ids.length });
+
+  return json({ scanned: ids.length, kicked: stale.length });
 }
