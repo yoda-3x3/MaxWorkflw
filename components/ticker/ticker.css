@@ -1,0 +1,96 @@
+/* Thin stock ticker bar. Markup and behaviour live in StockTicker.tsx. */
+
+.ticker {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  height: 28px;
+  overflow: hidden;
+  background: #0b0f14;
+  border-bottom: 1px solid #1f2937;
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+.ticker-track {
+  display: flex;
+  width: max-content;
+  height: 100%;
+  animation: ticker-scroll calc(var(--ticker-count, 9) * 4s) linear infinite;
+}
+
+.ticker:hover .ticker-track {
+  animation-play-state: paused;
+}
+
+.ticker-list {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2rem;
+  /* Trailing padding equals the gap so both halves are identical in width. */
+  padding: 0 2rem 0 0;
+  margin: 0;
+  list-style: none;
+}
+
+.ticker-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.ticker-symbol {
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.ticker-price {
+  color: #cbd5e1;
+}
+
+.ticker-change {
+  font-variant-numeric: tabular-nums;
+}
+
+.ticker-up .ticker-change {
+  color: #22c55e;
+}
+
+.ticker-down .ticker-change {
+  color: #ef4444;
+}
+
+.ticker-flat .ticker-change {
+  color: #94a3b8;
+}
+
+.ticker-arrow {
+  margin-right: 0.15rem;
+}
+
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* Reduced motion: no scrolling. Keep the first copy and let the user scroll it sideways. */
+@media (prefers-reduced-motion: reduce) {
+  .ticker {
+    overflow-x: auto;
+  }
+
+  .ticker-track {
+    animation: none;
+  }
+
+  .ticker-list--dup {
+    display: none;
+  }
+}
