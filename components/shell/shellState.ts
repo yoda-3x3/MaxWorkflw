@@ -3,7 +3,7 @@ import type { GestureAction } from "../gestures/actions";
 export const VIEWS = ["wall", "tree", "timeline"] as const;
 export type ViewId = (typeof VIEWS)[number];
 
-export const VIEW_STORAGE_KEY = "maxworkflw.view";
+export const VIEW_STORAGE_KEY = "workflwpro.view";
 
 export interface ShellState {
   view: ViewId;

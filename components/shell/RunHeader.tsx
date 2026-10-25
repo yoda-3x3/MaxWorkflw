@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import { MAX_AGENTS, type Run } from "../../lib/types";
-import { agentCountLabel, deadlineLabel, deadlineProgress, formatTokens, prLabel } from "./format";
+import {
+  agentCountLabel,
+  deadlineLabel,
+  deadlineProgress,
+  formatTokens,
+  isRunnerStarting,
+  prLabel,
+} from "./format";
 
 interface Props {
   run: Run;
@@ -69,8 +76,12 @@ export function RunHeader({ run, now, onMerge }: Props) {
         )}
       </dl>
 
+      {isRunnerStarting(run) && <p className="muted">runner starting...</p>}
+
       {active && (
-        <p className="cloud-note">Runs in the cloud: safe to close this tab.</p>
+        <p className="cloud-note">
+          Runs on GitHub Actions with your Claude subscription. Safe to close this tab.
+        </p>
       )}
 
       {(run.prUrl || canMerge) && (
