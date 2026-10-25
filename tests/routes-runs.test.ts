@@ -1,0 +1,231 @@
+import { test, describe, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { createSession, SESSION_COOKIE } from "@/lib/auth";
+import { getRunStore } from "@/lib/store";
+import type { Approval, Run } from "@/lib/types";
+import { GET as getRun } from "@/app/api/runs/[id]/route";
+import { POST as kickRun } from "@/app/api/runs/[id]/kick/route";
+import { POST as decide } from "@/app/api/runs/[id]/approvals/[approvalId]/route";
+import { POST as merge } from "@/app/api/runs/[id]/merge/route";
+
+const SESSION_SECRET_VALUE = "test-session-secret-0123456789abcdef";
+const alice = "alice@example.com";
+// Owner keys come from auth: `email:<address>` for magic links, `github:<login>` for OAuth.
+const aliceId = `email:${alice}`;
+
+let saved: Record<string, string | undefined>;
+
+beforeEach(() => {
+  saved = {
+    SESSION_SECRET: process.env.SESSION_SECRET,
+    ALLOWED_USERS: process.env.ALLOWED_USERS,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+  };
+  process.env.SESSION_SECRET = SESSION_SECRET_VALUE;
+  process.env.ALLOWED_USERS = `${alice},bob`;
+  delete process.env.GITHUB_TOKEN;
+});
+
+afterEach(() => {
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+});
+
+async function cookieFor(method: "magic_link" | "github", who: { email?: string; login?: string }) {
+  const token = await createSession({ method, ...who }, SESSION_SECRET_VALUE);
+  return `${SESSION_COOKIE}=${token}`;
+}
+
+const aliceCookie = () => cookieFor("magic_link", { email: alice });
+const bobCookie = () => cookieFor("github", { login: "bob" });
+
+function approval(id: string, runId: string, status: Approval["status"]): Approval {
+  return {
+    id,
+    runId,
+    agentId: "a1",
+    kind: "production_deploy",
+    request: "deploy to prod",
+    status,
+    createdAt: 1,
+  };
+}
+
+async function seedRun(overrides: Partial<Run> = {}): Promise<string> {
+  const id = `run-${Math.random().toString(36).slice(2)}`;
+  const run: Run = {
+    id,
+    ownerId: aliceId,
+    task: "t",
+    status: "waiting_approval",
+    tokens: 0,
+    agents: [],
+    approvals: [approval(`${id}-pending`, id, "pending"), approval(`${id}-done`, id, "approved")],
+    events: [],
+    createdAt: 1,
+    updatedAt: 1,
+    deadlineAt: 2,
+    ...overrides,
+  };
+  await getRunStore().saveRun(run);
+  return id;
+}
+
+function post(url: string, cookie: string | undefined, body?: unknown): Request {
+  const headers: Record<string, string> = {};
+  if (cookie) headers.cookie = cookie;
+  if (body !== undefined) headers["content-type"] = "application/json";
+  return new Request(url, {
+    method: "POST",
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+describe("run ownership", () => {
+  test("the owner reads their run", async () => {
+    const runId = await seedRun();
+    const res = await getRun(new Request(`https://app.test/api/runs/${runId}`, { headers: { cookie: await aliceCookie() } }), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test("another allowed user gets 404, not the run", async () => {
+    const runId = await seedRun();
+    const res = await getRun(new Request(`https://app.test/api/runs/${runId}`, { headers: { cookie: await bobCookie() } }), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  test("no session gets 401", async () => {
+    const runId = await seedRun();
+    const res = await getRun(new Request(`https://app.test/api/runs/${runId}`), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  test("a session for a user no longer on the allowlist gets 401", async () => {
+    const runId = await seedRun();
+    process.env.ALLOWED_USERS = "someone-else@example.com";
+    const res = await getRun(new Request(`https://app.test/api/runs/${runId}`, { headers: { cookie: await aliceCookie() } }), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  test("kick is owner-only", async () => {
+    const runId = await seedRun();
+    const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await bobCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 404);
+  });
+});
+
+describe("approval decide", () => {
+  const url = (runId: string, approvalId: string) => `https://app.test/api/runs/${runId}/approvals/${approvalId}`;
+
+  test("another user gets 404 and no decision is queued", async () => {
+    const runId = await seedRun();
+    const res = await decide(post(url(runId, `${runId}-pending`), await bobCookie(), { decision: "approve" }), {
+      params: Promise.resolve({ id: runId, approvalId: `${runId}-pending` }),
+    });
+    assert.equal(res.status, 404);
+    assert.deepEqual(await getRunStore().drainDecisions(runId, 10), []);
+  });
+
+  test("an already decided approval gets 409", async () => {
+    const runId = await seedRun();
+    const res = await decide(post(url(runId, `${runId}-done`), await aliceCookie(), { decision: "deny" }), {
+      params: Promise.resolve({ id: runId, approvalId: `${runId}-done` }),
+    });
+    assert.equal(res.status, 409);
+    assert.deepEqual(await getRunStore().drainDecisions(runId, 10), []);
+  });
+
+  test("an unknown approval gets 404", async () => {
+    const runId = await seedRun();
+    const res = await decide(post(url(runId, "nope"), await aliceCookie(), { decision: "approve" }), {
+      params: Promise.resolve({ id: runId, approvalId: "nope" }),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  test("a bad decision value gets 400", async () => {
+    const runId = await seedRun();
+    const res = await decide(post(url(runId, `${runId}-pending`), await aliceCookie(), { decision: "maybe" }), {
+      params: Promise.resolve({ id: runId, approvalId: `${runId}-pending` }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("the owner's approve is queued as types.ts 'approved' and the approval is untouched", async () => {
+    const runId = await seedRun();
+    const res = await decide(
+      post(url(runId, `${runId}-pending`), await aliceCookie(), { decision: "approve", note: "  go  " }),
+      { params: Promise.resolve({ id: runId, approvalId: `${runId}-pending` }) },
+    );
+    assert.equal(res.status, 202);
+
+    const [queued] = await getRunStore().drainDecisions(runId, 10);
+    assert.equal(queued.approvalId, `${runId}-pending`);
+    assert.equal(queued.runId, runId);
+    assert.equal(queued.decision, "approved");
+    assert.equal(queued.note, "go");
+    assert.equal(typeof queued.id, "string");
+    assert.equal(typeof queued.decidedAt, "number");
+
+    const run = await getRunStore().getRun(aliceId, runId);
+    assert.equal(run?.approvals.find((a) => a.id === `${runId}-pending`)?.status, "pending");
+  });
+
+  test("deny is queued as 'denied'", async () => {
+    const runId = await seedRun();
+    const res = await decide(post(url(runId, `${runId}-pending`), await aliceCookie(), { decision: "deny" }), {
+      params: Promise.resolve({ id: runId, approvalId: `${runId}-pending` }),
+    });
+    assert.equal(res.status, 202);
+    const [queued] = await getRunStore().drainDecisions(runId, 10);
+    assert.equal(queued.decision, "denied");
+  });
+});
+
+describe("merge", () => {
+  const withPr = { repo: "octo/app", prNumber: 7, prUrl: "https://github.com/octo/app/pull/7" };
+  const url = (runId: string) => `https://app.test/api/runs/${runId}/merge`;
+
+  test("without confirm: true gets 400", async () => {
+    const runId = await seedRun(withPr);
+    const res = await merge(post(url(runId), await aliceCookie(), {}), { params: Promise.resolve({ id: runId }) });
+    assert.equal(res.status, 400);
+  });
+
+  test("confirm must be exactly true", async () => {
+    const runId = await seedRun(withPr);
+    const res = await merge(post(url(runId), await aliceCookie(), { confirm: "yes" }), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("a non-owner gets 404 even with confirm: true", async () => {
+    const runId = await seedRun(withPr);
+    const res = await merge(post(url(runId), await bobCookie(), { confirm: true }), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  test("the owner with confirm but no PR gets 409", async () => {
+    const runId = await seedRun();
+    const res = await merge(post(url(runId), await aliceCookie(), { confirm: true }), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 409);
+  });
+});
