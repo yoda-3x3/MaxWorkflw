@@ -15,6 +15,7 @@ import {
   renderBrief,
   unitBrief,
   validatePlan,
+  leadSystemPrompt,
   workerSystemPrompt,
 } from '../lib/prompts';
 import type { Plan, PlanUnit } from '../lib/types';
@@ -96,7 +97,16 @@ test('the four hard stops are listed once each, mapped to approval kinds', () =>
     assert.ok(planner.includes(r.text), `planner missing rule ${r.rule}`);
     assert.ok(unitBrief(unit('x'), 'worker', 'm').includes(r.text.split('.')[0]), `brief missing rule ${r.rule}`);
   }
-  assert.match(worker, /request_approval/);
+  assert.match(worker, /APPROVAL_REQUEST rule=N: /);
+  assert.doesNotMatch(worker, /request_approval|list_files|read_file|write_file/);
+});
+
+test('worker and lead prompts describe repo-mode file work and never pushing', () => {
+  for (const prompt of [workerSystemPrompt(), leadSystemPrompt()]) {
+    assert.match(prompt, /checkout of the project at your working directory/);
+    assert.match(prompt, /push nothing/);
+  }
+  assert.match(plannerUserPrompt('x', { repo: 'acme/app' }), /agents never push/);
 });
 
 test('the planner prompt states the agent cap, depth cap and JSON shape', () => {

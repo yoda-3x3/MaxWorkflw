@@ -6,6 +6,7 @@ import {
   deadlineProgress,
   formatDuration,
   formatTokens,
+  isRunnerStarting,
   prLabel,
   timeAgo,
 } from "./format";
@@ -49,8 +50,16 @@ test("timeAgo buckets by size", () => {
   assert.equal(timeAgo(0, 2 * 86_400_000), "2d ago");
 });
 
+test("isRunnerStarting is true only while queued with no agent started", () => {
+  assert.equal(isRunnerStarting({ status: "queued", agents: [] }), true);
+  assert.equal(isRunnerStarting({ status: "queued", agents: [{ status: "queued" }] }), true);
+  assert.equal(isRunnerStarting({ status: "queued", agents: [{ status: "running" }] }), false);
+  assert.equal(isRunnerStarting({ status: "planning", agents: [] }), false);
+  assert.equal(isRunnerStarting({ status: "done", agents: [] }), false);
+});
+
 test("prLabel needs both repo and PR number", () => {
-  assert.equal(prLabel("yoda-3x3/MaxWorkflw", 12), "yoda-3x3/MaxWorkflw#12");
+  assert.equal(prLabel("yoda-3x3/WorkflwPro", 12), "yoda-3x3/WorkflwPro#12");
   assert.equal(prLabel(undefined, 12), null);
   assert.equal(prLabel("a/b", undefined), null);
 });
