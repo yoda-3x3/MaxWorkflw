@@ -25,13 +25,13 @@ WorkflwPro is built for one owner. It uses your own Claude subscription through 
                │                 auth: CLAUDE_CODE_OAUTH_TOKEN
                │                 (owner's Claude subscription, no API key)
                ▼
-        advances the run one step, writes state back to Upstash
+        advances the run, writes state back to Upstash
 ```
 
 1. **Vercel stores and queues.** The web app and API routes keep runs, agents, approvals, and logs in Upstash Redis. To advance a run, Vercel dispatches `run.yml` through the GitHub `workflow_dispatch` API with the run id as input.
 2. **GitHub Actions does the work.** Each dispatch checks out this repo, installs dependencies, installs Claude Code, and runs `scripts/runner.ts` for that run id. The runner advances the run until it has nothing to do right now or its time budget is spent.
 3. **Claude Code runs the agents.** Agent calls go through `claude -p` on the runner. The OAuth token bills the owner's Claude subscription. `ANTHROPIC_API_KEY` is ignored and removed if it is set.
-4. **Vercel never runs model calls.** Vercel only stores state and dispatches jobs. The cron is a backup that re-dispatches runs that are still active.
+4. **Vercel never runs model calls.** Vercel only stores state and dispatches jobs. Three things dispatch a run: opening it in the UI (when it has gone quiet for more than 90 seconds), an approval decision, and a daily cron. The cron re-dispatches runs idle for more than 3 minutes and skips runs that are waiting for approval.
 
 Concurrency: the workflow uses one concurrency group per run id (`run-<id>`) with `cancel-in-progress: false`, so two dispatches for the same run queue instead of cancelling each other. The runner also takes a per-run lock in Redis.
 
@@ -40,7 +40,7 @@ Concurrency: the workflow uses one concurrency group per run id (`run-<id>`) wit
 1. Sign in with GitHub. Only allowlisted users get in.
 2. Submit a task, optionally with a GitHub repo. The Orchestrator returns a JSON plan: `{summary, units:[{id,title,brief,deps,workers?}]}`.
 3. Units with `workers` become a Lead with Haiku workers. Units without become a standalone Sonnet worker.
-4. Each dispatch advances the run by one or more steps: plan, a wave of ready agents, or finalize.
+4. Each dispatch runs the engine until it has nothing to do right now (planning, a wave of ready agents, or finalizing), then stops. The next dispatch picks up where it left off.
 5. Leads integrate their workers' reports. The Orchestrator writes a final report.
 6. Risky actions pause only the agent that asked and show an Approve/Deny card. Everything else keeps going.
 
@@ -50,7 +50,7 @@ Concurrency: the workflow uses one concurrency group per run id (`run-<id>`) wit
 - At most **3 tiers**: Orchestrator, Lead, Worker.
 - Each run has a **24-hour deadline**. A run past it fails with a clear message.
 - Each agent gets one retry. After that it is marked failed, and the run continues and reports it.
-- Repo mode writes only to its own branch for the run. It never merges, deletes, or force-pushes. You press Merge yourself.
+- Repo mode writes only to its own branch, `workflwpro/<runId>`. It never merges, deletes, or force-pushes. You press Merge yourself.
 - Writes block path traversal, `.git/`, and `.env*` files.
 
 ## Accounts you need
@@ -71,7 +71,7 @@ Creating any of these, and any key or secret, is a manual step for the owner.
 
 1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.
 2. Homepage URL: `https://workflwpro.vercel.app`.
-3. Authorization callback URL: `https://workflwpro.vercel.app/api/auth/github/callback`. It must match `APP_URL` exactly.
+3. Authorization callback URL: `https://workflwpro.vercel.app/api/auth/github/callback`. It must match exactly.
 4. Copy the client ID and generate a client secret. Put them in Vercel as `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
 
 ### 2. Claude Code OAuth token
@@ -90,9 +90,8 @@ Set these in the Vercel project settings for production and preview:
 | Variable | Required | Purpose |
 |---|---|---|
 | `SESSION_SECRET` | yes | HMAC key for session cookies. At least 32 characters. `openssl rand -base64 32` |
-| `CRON_SECRET` | yes | Bearer secret for `/api/cron/kick` and the step route. `openssl rand -hex 32` |
-| `ALLOWED_USERS` | yes | Comma-separated GitHub logins (and emails, if any). Empty denies everyone. |
-| `APP_URL` | yes | Public base URL, e.g. `https://workflwpro.vercel.app`. Used for the OAuth callback and self-calls. |
+| `CRON_SECRET` | yes | Bearer secret for `/api/cron/kick` only. `openssl rand -hex 32` |
+| `ALLOWED_USERS` | yes | Comma-separated GitHub logins, case-insensitive. Empty denies everyone. |
 | `GITHUB_CLIENT_ID` | yes | OAuth app client ID |
 | `GITHUB_CLIENT_SECRET` | yes | OAuth app client secret |
 | `GITHUB_TOKEN` | yes | Fine-grained token with `actions: write` on the repo that holds `run.yml`. Used to dispatch runs. |
@@ -144,7 +143,7 @@ Other scripts:
 
 - **Secrets stay out of code, git, and the browser.** Never commit `.env*` files. Never put secrets in `NEXT_PUBLIC_*` variables.
 - **No API keys.** Agents bill through `CLAUDE_CODE_OAUTH_TOKEN`. The runner deletes `ANTHROPIC_API_KEY` if it is present.
-- **The runner scrubs its own environment.** Before agents run, it deletes `GH_REPO_TOKEN` and the Upstash variables from its environment, and it redacts known secret values from logs.
+- **The agent's environment is an allowlist.** The `claude` child process gets only an allowlisted environment. It never receives `GH_REPO_TOKEN`, `UPSTASH_*`, `GITHUB_TOKEN`, `SESSION_SECRET`, or `CRON_SECRET`. `CLAUDE_CODE_OAUTH_TOKEN` is the only secret it sees. The runner also redacts known secret values from logs.
 - **Only dispatches advance runs.** The workflow runs only on `workflow_dispatch`, so forks and other events never receive secrets.
 - **Repo mode is write-limited.** Agents write to a run branch only. They never merge, delete, or force-push. You merge the PR yourself.
 - **Approvals gate risky actions.** A risky action pauses the agent that asked until you approve or deny it.
@@ -153,30 +152,29 @@ Other scripts:
 ## What agents can and cannot do
 
 - Agents can run code, but only through Claude Code inside the GitHub Actions runner. Code they run executes on that disposable runner, not on Vercel.
-- The Claude Code process needs `CLAUDE_CODE_OAUTH_TOKEN` in its environment, so code an agent runs could read it. Treat the token as exposed to agent-run code. Use a token tied to your subscription that you can rotate, and review repo-mode PRs before you merge.
+- The `claude` child gets `CLAUDE_CODE_OAUTH_TOKEN` as its only secret, so code an agent runs could read it. Treat the token as exposed to agent-run code. Use a token tied to your subscription that you can rotate, and review repo-mode PRs before you merge.
 - Check generated code by reading it and running the tests yourself before you merge.
 
 ## Known limits
 
 - **Actions time limits.** The workflow job has `timeout-minutes: 330`. The runner stops starting new steps after about 5 hours, so the last step finishes inside the job limit. Work that does not fit in one job continues in the next dispatch.
 - **Run deadline.** Each run has a 24-hour deadline, counted from creation, whatever the number of dispatches.
-- **Cron is daily on Vercel Hobby.** `vercel.json` schedules `/api/cron/kick` at `0 0 * * *`. That is a backup only. Dispatches from the UI and from chained steps do most of the work. Pro allows more frequent cron.
+- **Cron is daily on Vercel Hobby.** `vercel.json` schedules `/api/cron/kick` at `0 0 * * *`. That is a backup only. UI opens and approval decisions do most of the work. Pro allows more frequent cron.
 - **Concurrency is one job per run.** A second dispatch for the same run waits for the first.
 - **GitHub rate limits and Claude subscription limits** apply. A run that hits a limit retries later, or fails and reports the error.
 
 ## API
 
-All routes require a signed session, except `/api/auth/*`. The step route and cron route accept only `Authorization: Bearer $CRON_SECRET`.
+All routes require a signed session, except `/api/auth/*`. The cron route accepts only `Authorization: Bearer $CRON_SECRET`.
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET / POST | `/api/runs` | List your runs / create a run (`{task, repo?}`) |
 | GET | `/api/runs/:id` | Full run: agents, approvals, log, tokens, deadline, PR, final report |
-| POST | `/api/runs/:id/kick` | Dispatch the run from the UI |
-| POST | `/api/runs/:id/approvals/:approvalId` | `{decision: "approve" \| "deny"}` |
+| POST | `/api/runs/:id/kick` | Dispatch the run from the UI if it has gone quiet for more than 90 seconds |
+| POST | `/api/runs/:id/approvals/:approvalId` | `{decision: "approve" \| "deny"}`. Also dispatches the run. |
 | POST | `/api/runs/:id/merge` | `{confirm: true}`. Owner only. Merges the PR. |
-| POST | `/api/runs/:id/step` | Advance one step. `CRON_SECRET` only. |
-| GET | `/api/cron/kick` | Cron: dispatch active runs. `CRON_SECRET` only. |
+| GET | `/api/cron/kick` | Cron: dispatch runs idle for more than 3 minutes, skipping runs waiting for approval. `CRON_SECRET` only. |
 
 ## Repo layout
 
