@@ -46,7 +46,7 @@ export function isCronAuthorized(req: Request): boolean {
  */
 export async function dispatchRun(
   runId: string,
-  opts: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch } = {},
+  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch } = {},
 ): Promise<void> {
   const env = opts.env ?? process.env;
   const token = env.GITHUB_TOKEN;
