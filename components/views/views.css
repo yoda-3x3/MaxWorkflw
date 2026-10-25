@@ -1,0 +1,354 @@
+/* Run views: Wall, Tree, Timeline. Dark, mobile-first. Colors come from the
+   CSS variables below; the shell may override them on :root. */
+
+.views-empty {
+  color: var(--views-muted, #8a93a6);
+  font-size: 0.95rem;
+  padding: 1rem 0;
+}
+
+/* ---- Shared badges ---- */
+
+.tier-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: #22283a;
+  color: #c9d1e3;
+  white-space: nowrap;
+}
+
+.tier-badge--orchestrator {
+  background: #3b2f6b;
+  color: #d7ccff;
+}
+
+.tier-badge--lead {
+  background: #1d3b5c;
+  color: #bfe0ff;
+}
+
+.tier-badge--worker {
+  background: #22283a;
+  color: #c9d1e3;
+}
+
+.status-pill {
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 6px;
+  white-space: nowrap;
+  background: #2a3044;
+  color: #aab3c7;
+}
+
+.status-pill--running {
+  background: #13372a;
+  color: #7ee2b0;
+}
+
+.status-pill--waiting_approval {
+  background: #3d3314;
+  color: #ffd66b;
+}
+
+.status-pill--done {
+  background: #1f3322;
+  color: #a6e3a1;
+}
+
+.status-pill--failed {
+  background: #3d1c1f;
+  color: #ff9aa5;
+}
+
+/* ---- Wall ---- */
+
+.wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: 0.75rem;
+}
+
+.agent-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.85rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid #262c3d;
+  background: #151a26;
+  color: #e6eaf4;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.agent-card:hover,
+.agent-card:focus-visible {
+  border-color: #3a4560;
+  outline: none;
+}
+
+.agent-card--failed {
+  border-color: #5a2a30;
+}
+
+.agent-card--done {
+  opacity: 0.85;
+}
+
+.agent-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agent-card__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.agent-card__meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+.agent-card__meta dt {
+  color: #7d869b;
+}
+
+.agent-card__meta dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-card__timer {
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-card__report {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: #aab3c7;
+  overflow-wrap: anywhere;
+}
+
+.agent-card__report--error {
+  color: #ff9aa5;
+}
+
+/* Running and waiting agents glow. */
+.agent-card--glow {
+  border-color: #2fbf7a;
+  animation: views-glow 2.2s ease-in-out infinite;
+}
+
+.agent-card--waiting_approval.agent-card--glow {
+  border-color: #e0b64a;
+  animation-name: views-glow-amber;
+}
+
+@keyframes views-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(47, 191, 122, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 18px 2px rgba(47, 191, 122, 0.55);
+  }
+}
+
+@keyframes views-glow-amber {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(224, 182, 74, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 18px 2px rgba(224, 182, 74, 0.55);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-card--glow {
+    animation: none;
+    box-shadow: 0 0 10px 1px rgba(47, 191, 122, 0.4);
+  }
+}
+
+/* ---- Tree ---- */
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tree--root {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tree__item {
+  position: relative;
+}
+
+/* Nested lists are indented with a vertical guide line. */
+.tree .tree {
+  margin-left: 1.1rem;
+  padding-left: 0.9rem;
+  border-left: 1px dashed #2c3449;
+  margin-top: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.tree__node {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid #262c3d;
+  background: #151a26;
+  color: #e6eaf4;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.tree__node:hover,
+.tree__node:focus-visible {
+  border-color: #3a4560;
+  outline: none;
+}
+
+.tree__node--running {
+  border-color: #2fbf7a;
+}
+
+.tree__node--waiting_approval {
+  border-color: #e0b64a;
+}
+
+.tree__title {
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tree__timer {
+  font-variant-numeric: tabular-nums;
+  color: #7d869b;
+  font-size: 0.8rem;
+}
+
+/* ---- Timeline ---- */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.timeline__axis {
+  display: flex;
+  justify-content: space-between;
+  padding-left: 9.5rem;
+  color: #7d869b;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+}
+
+.timeline__row {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.timeline__row:hover {
+  background: #171c2a;
+}
+
+.timeline__label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.timeline__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c9d1e3;
+}
+
+.timeline__track {
+  position: relative;
+  height: 0.9rem;
+  border-radius: 4px;
+  background: #1a2030;
+  overflow: hidden;
+}
+
+.timeline__bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 4px;
+  background: #4a5573;
+  min-width: 2px;
+}
+
+.timeline__bar--running {
+  background: #2fbf7a;
+  box-shadow: 0 0 10px rgba(47, 191, 122, 0.6);
+}
+
+.timeline__bar--waiting_approval {
+  background: #e0b64a;
+}
+
+.timeline__bar--done {
+  background: #3f6b9a;
+}
+
+.timeline__bar--failed {
+  background: #c0505c;
+}
+
+/* Narrow screens: stack the label above the track. */
+@media (max-width: 520px) {
+  .timeline__axis {
+    padding-left: 0;
+  }
+
+  .timeline__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+  }
+}
