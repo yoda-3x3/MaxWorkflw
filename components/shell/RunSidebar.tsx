@@ -37,7 +37,7 @@ export function RunSidebar({
     e.preventDefault();
     const trimmedRepo = repo.trim();
     if (trimmedRepo && !REPO_RE.test(trimmedRepo)) {
-      setRepoError("Use owner/name, e.g. yoda-3x3/MaxWorkflw");
+      setRepoError("Use owner/name, e.g. yoda-3x3/WorkflwPro");
       return;
     }
     setRepoError(null);
@@ -49,6 +49,8 @@ export function RunSidebar({
 
   return (
     <aside className="sidebar" data-open={open} data-no-gesture aria-label="Runs">
+      <div className="brand">WorkflwPro</div>
+
       <form className="new-run" onSubmit={submit}>
         <h2>New run</h2>
         <label>
