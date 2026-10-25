@@ -2,9 +2,28 @@ import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { isCronAuthorized, readCookie } from "@/lib/session";
 import { createSession, SESSION_COOKIE } from "@/lib/auth";
+import { configureEngine } from "@/lib/engine";
+import { getRunStore } from "@/lib/store";
 import { POST as stepPost } from "@/app/api/runs/[id]/step/route";
 
 const SECRET = "test-cron-secret-value";
+
+// Mocked Llm: a plain ClaudeClient that answers without network. The step route never reaches
+// the real Anthropic client, and nothing here imports lib/claude.
+let llmCalls = 0;
+const mockLlm = {
+  async createMessage() {
+    llmCalls++;
+    return {
+      id: "msg_mock",
+      model: "mock",
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+  },
+};
 
 function req(headers: Record<string, string> = {}, url = "https://app.test/api/runs/r1/step") {
   return new Request(url, { method: "POST", headers });
@@ -60,6 +79,16 @@ describe("step route auth", () => {
     saved = { CRON_SECRET: process.env.CRON_SECRET, SESSION_SECRET: process.env.SESSION_SECRET };
     process.env.CRON_SECRET = SECRET;
     process.env.SESSION_SECRET = "test-session-secret-0123456789abcdef";
+    llmCalls = 0;
+    configureEngine({
+      claude: mockLlm,
+      github: () => {
+        throw new Error("github is not used by the step route tests");
+      },
+      store: getRunStore(),
+      models: { orchestrator: "mock-orch", lead: "mock-lead", worker: "mock-worker" },
+      now: () => Date.now(),
+    });
   });
   afterEach(() => {
     for (const [k, v] of Object.entries(saved)) {
@@ -95,6 +124,13 @@ describe("step route auth", () => {
     const res = await stepPost(req({ authorization: `Bearer ${SECRET}` }), { params: params() });
     assert.equal(res.status, 202);
     assert.deepEqual(await res.json(), { accepted: true });
+  });
+
+  test("an empty CRON_SECRET rejects even an empty bearer on the step route", async () => {
+    process.env.CRON_SECRET = "";
+    const res = await stepPost(req({ authorization: "Bearer " }), { params: params() });
+    assert.equal(res.status, 401);
+    assert.equal(llmCalls, 0);
   });
 });
 
