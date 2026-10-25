@@ -9,9 +9,9 @@ import { POST as decide } from "@/app/api/runs/[id]/approvals/[approvalId]/route
 import { POST as merge } from "@/app/api/runs/[id]/merge/route";
 
 const SESSION_SECRET_VALUE = "test-session-secret-0123456789abcdef";
-const alice = "alice@example.com";
-// Owner keys come from auth: `email:<address>` for magic links, `github:<login>` for OAuth.
-const aliceId = `email:${alice}`;
+const alice = "alice";
+// Owner key comes from auth: `github:<login>`. Sessions are GitHub-only and login-allowlisted.
+const aliceId = `github:${alice}`;
 
 const CRON_SECRET_VALUE = "test-cron-secret-value";
 
@@ -62,13 +62,13 @@ afterEach(() => {
   }
 });
 
-async function cookieFor(method: "magic_link" | "github", who: { email?: string; login?: string }) {
-  const token = await createSession({ method, ...who }, SESSION_SECRET_VALUE);
+async function cookieFor(login: string) {
+  const token = await createSession({ method: "github", login }, SESSION_SECRET_VALUE);
   return `${SESSION_COOKIE}=${token}`;
 }
 
-const aliceCookie = () => cookieFor("magic_link", { email: alice });
-const bobCookie = () => cookieFor("github", { login: "bob" });
+const aliceCookie = () => cookieFor(alice);
+const bobCookie = () => cookieFor("bob");
 
 function approval(id: string, runId: string, status: Approval["status"]): Approval {
   return {
@@ -140,7 +140,7 @@ describe("run ownership", () => {
 
   test("a session for a user no longer on the allowlist gets 401", async () => {
     const runId = await seedRun();
-    process.env.ALLOWED_USERS = "someone-else@example.com";
+    process.env.ALLOWED_USERS = "someone-else";
     const res = await getRun(new Request(`https://app.test/api/runs/${runId}`, { headers: { cookie: await aliceCookie() } }), {
       params: Promise.resolve({ id: runId }),
     });

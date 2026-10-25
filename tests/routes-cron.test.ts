@@ -8,7 +8,7 @@ import { POST as userKick } from "@/app/api/runs/[id]/kick/route";
 
 const SECRET = "test-cron-secret-value";
 const SESSION_SECRET_VALUE = "test-session-secret-0123456789abcdef";
-const alice = "alice@example.com";
+const alice = "alice";
 
 let saved: Record<string, string | undefined>;
 // Mocked dispatch: every outbound fetch is recorded, never sent. Dispatch (GitHub workflow_dispatch
@@ -54,7 +54,7 @@ afterEach(() => {
 function run(status: Run["status"], id: string): Run {
   return {
     id,
-    ownerId: `email:${alice}`,
+    ownerId: `github:${alice}`,
     task: "t",
     status,
     tokens: 0,
@@ -99,7 +99,7 @@ describe("cron kick: auth", () => {
   });
 
   test("a user session cookie alone gets 401", async () => {
-    const token = await createSession({ method: "magic_link", email: alice }, SESSION_SECRET_VALUE);
+    const token = await createSession({ method: "github", login: alice }, SESSION_SECRET_VALUE);
     const res = await cronKick(cronGet({ cookie: `${SESSION_COOKIE}=${token}` }));
     assert.equal(res.status, 401);
   });
