@@ -1,5 +1,5 @@
 import { createRun } from "@/lib/engine";
-import { getCaller, json, scheduleKick } from "@/lib/session";
+import { dispatchRun, getCaller, json, runAfterResponse } from "@/lib/session";
 import { getRunStore } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -34,6 +34,6 @@ export async function POST(req: Request) {
   }
 
   const run = await createRun({ ownerId: caller.id, task, repo });
-  scheduleKick(new URL(req.url).origin, run.id);
+  runAfterResponse(() => dispatchRun(run.id));
   return json(run, 201);
 }
