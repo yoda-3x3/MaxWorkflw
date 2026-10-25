@@ -36,8 +36,12 @@ jobs:
 
       - run: npm ci
 
-      - run: npm i -g @anthropic-ai/claude-code
+      # Pinned: the agent runs through this CLI. Bump deliberately after checking the release.
+      - run: npm i -g @anthropic-ai/claude-code@2.1.310
 
+      # Secrets are exposed only to this final step (the env block below). Checkout, npm ci and the CLI
+      # install run without them. The runner removes GH_REPO_TOKEN and the Upstash vars from its env
+      # before any agent starts. Agent subprocesses inherit only lib/claude-cli.ts ENV_ALLOWLIST, which keeps the OAuth token and nothing else from this list.
       - name: Advance run
         env:
           RUN_ID: ${{ inputs.run_id }}

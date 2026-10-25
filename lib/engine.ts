@@ -31,7 +31,7 @@ import { getRunStore, type RunStore } from './store'
 
 export type EngineStore = Pick<
   RunStore,
-  'saveRun' | 'getRunForEngine' | 'acquireRunLock' | 'releaseRunLock' | 'drainDecisions'
+  'saveRun' | 'getRunForEngine' | 'acquireRunLock' | 'releaseRunLock' | 'drainDecisions' | 'enqueueDecision'
 >
 
 export type EngineGitHub = Pick<GitHubClient, 'openPR'>
@@ -59,7 +59,10 @@ export interface StepResult {
   more: boolean
 }
 
-const LOCK_TTL_SEC = 300
+// The lock must outlive the longest step, or a second runner could start mid-wave. A step is one
+// wave or one model call, and each call is capped at 30 min (claude-cli timeoutMs), so ~31 min
+// worst case. A crashed holder blocks the run for at most this long.
+export const LOCK_TTL_SEC = 3600
 // Turns per agent work call. Passed to the Llm as maxTurns.
 export const AGENT_MAX_TURNS = 30
 const PLAN_MAX_TOKENS = 4000
@@ -514,13 +517,16 @@ async function finalStep(run: Run, deps: EngineDeps, now: number): Promise<StepR
   return { runId: run.id, action: 'finalized', more: false }
 }
 
-async function drive(runId: string, deps: EngineDeps): Promise<StepResult> {
+// `taken` collects every decision drained from the queue, so step() can put them back if this throws.
+async function drive(runId: string, deps: EngineDeps, taken: ApprovalDecision[]): Promise<StepResult> {
   const run = await deps.store.getRunForEngine(runId)
   if (!run) throw new Error(`run ${runId} not found`)
   if (run.status === 'done' || run.status === 'failed') return { runId, action: 'idle', more: false }
 
   const now = deps.now()
-  for (const m of applyDecisions(run, await deps.store.drainDecisions(runId), now)) addEvent(run, m, now)
+  const decisions = await deps.store.drainDecisions(runId)
+  taken.push(...decisions)
+  for (const m of applyDecisions(run, decisions, now)) addEvent(run, m, now)
   if (now > run.deadlineAt) return failRun(run, 'Deadline exceeded: not finished within 24 hours', deps, now)
   for (const m of recoverStuck(run.agents, now)) addEvent(run, m, now)
   const orch = run.agents.find((a) => a.role === 'orchestrator')!
@@ -573,8 +579,15 @@ export async function step(runId: string, overrides: Partial<EngineDeps> = {}): 
   const deps = resolveDeps(overrides)
   const token = await deps.store.acquireRunLock(runId, LOCK_TTL_SEC)
   if (!token) return { runId, action: 'locked', more: false }
+  const taken: ApprovalDecision[] = []
   try {
-    return await drive(runId, deps)
+    return await drive(runId, deps, taken)
+  } catch (err) {
+    // Drained decisions are removed from the queue before the run is saved. If the step fails,
+    // put them back so the owner's approval is not lost. Re-applying one is a no-op once it is
+    // decided, so a decision that did reach the saved run is harmless to see again.
+    for (const d of taken) await deps.store.enqueueDecision(runId, d).catch(() => {})
+    throw err
   } finally {
     await deps.store.releaseRunLock(runId, token)
   }
