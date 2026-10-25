@@ -1,13 +1,15 @@
 // GitHub access for MaxWorkflw runs.
 //
-// Every operation is scoped to the branch `maxworkflw/<runId>`. The branch is
+// Every operation is scoped to the branch `workflwpro/<runId>`. The branch is
 // created on demand from the repo's default branch. There is no delete and no
 // force-push. Merging is only possible through mergePR, and only when the
-// caller passes `explicit: true`.
+// caller passes `explicit: true`. dispatchRunWorkflow starts a workflow run
+// and does not touch any branch.
 
-export const BRANCH_PREFIX = 'maxworkflw/';
+export const BRANCH_PREFIX = 'workflwpro/';
 
 const API_VERSION = '2022-11-28';
+const DEFAULT_API_BASE = 'https://api.github.com';
 const REQUEST_TIMEOUT_MS = 20_000;
 
 export interface GitHubClientOptions {
@@ -86,15 +88,20 @@ export interface MergePRResult {
 }
 
 /**
- * Validates a run id and returns the branch name for it.
- * Run ids are restricted so they cannot escape the `maxworkflw/` namespace.
+ * Throws PathPolicyError unless the run id is safe to use in a branch name or a
+ * workflow input. Run ids are restricted so they cannot escape the `workflwpro/` namespace.
  */
-export function branchForRun(runId: string): string {
+export function assertRunId(runId: string): string {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/.test(runId)
     || runId.includes('..') || runId.endsWith('.')) {
     throw new PathPolicyError(`invalid run id: ${JSON.stringify(runId)}`);
   }
-  return BRANCH_PREFIX + runId;
+  return runId;
+}
+
+/** Validates a run id and returns the branch name for it. */
+export function branchForRun(runId: string): string {
+  return BRANCH_PREFIX + assertRunId(runId);
 }
 
 function isBlockedSegment(segment: string): boolean {
@@ -150,38 +157,57 @@ function isRetryable(err: unknown): boolean {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-export function createGitHubClient(opts: GitHubClientOptions) {
-  const doFetch = opts.fetch ?? globalThis.fetch;
-  const apiBase = (opts.apiBase ?? 'https://api.github.com').replace(/\/$/, '');
-  const maxAttempts = opts.maxAttempts ?? 3;
-  const retryDelayMs = opts.retryDelayMs ?? 250;
-  const repoPath = `/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(opts.repo)}`;
-
-  async function request<T = any>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
-    const res = await doFetch(apiBase + path, {
+/** One GitHub REST call. Timeouts surface as GitHubError 408. */
+async function githubRequest<T = any>(
+  doFetch: typeof fetch,
+  apiBase: string,
+  token: string,
+  method: 'GET' | 'POST' | 'PUT',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await doFetch(apiBase + path, {
       method,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        Authorization: `Bearer ${token}`,
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': API_VERSION,
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) {
-      let detail = '';
-      try {
-        const data: any = await res.json();
-        detail = data?.message ? `: ${data.message}` : '';
-      } catch {
-        // Response body is not JSON. The status is enough.
-      }
-      throw new GitHubError(res.status, `GitHub ${method} ${path} failed with ${res.status}${detail}`);
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new GitHubError(408, `GitHub ${method} ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
     }
-    if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    throw err;
   }
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const data: any = await res.json();
+      detail = data?.message ? `: ${data.message}` : '';
+    } catch {
+      // Response body is not JSON. The status is enough.
+    }
+    throw new GitHubError(res.status, `GitHub ${method} ${path} failed with ${res.status}${detail}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+export function createGitHubClient(opts: GitHubClientOptions) {
+  const doFetch = opts.fetch ?? globalThis.fetch;
+  const apiBase = (opts.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, '');
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const retryDelayMs = opts.retryDelayMs ?? 250;
+  const repoPath = `/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(opts.repo)}`;
+
+  const request = <T = any>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> =>
+    githubRequest<T>(doFetch, apiBase, opts.token, method, path, body);
 
   /** Returns the sha of the ref, or null if it does not exist. */
   async function getRefSha(branch: string): Promise<string | null> {
@@ -194,7 +220,7 @@ export function createGitHubClient(opts: GitHubClientOptions) {
     }
   }
 
-  /** Creates maxworkflw/<runId> from the default branch if it is missing. Never moves an existing ref. */
+  /** Creates workflwpro/<runId> from the default branch if it is missing. Never moves an existing ref. */
   async function ensureBranch(runId: string): Promise<string> {
     const branch = branchForRun(runId);
     for (let attempt = 1; ; attempt++) {
