@@ -1,22 +1,14 @@
 // Step engine. One step() call does one unit of work: plan, one wave of ready
 // agents (run in parallel), or finalize. Callers chain the next step.
 //
-// Prompts, plan parsing and the agent cap live in prompts.ts. The model loop is
-// claude.ts's runAgent. Repo access goes through github.ts, which enforces path
-// policy. The engine's GitHub dependency omits mergePR, so it cannot merge.
+// Prompts, plan parsing and the agent cap live in prompts.ts. Model calls go through
+// the Llm port (llm.ts). Agents that change files work in the runner's checkout
+// (workspace.dir); the engine commits after each agent and opens the PR at the end.
+// The GitHub dependency only opens PRs, so the engine cannot merge.
 
 import { AGENT_MAX_ATTEMPTS, AGENT_STALL_MS, MAX_AGENTS, RUN_DEADLINE_MS } from './types'
 import type { Agent, ApprovalDecision, ApprovalKind, Plan, Run } from './types'
-import {
-  createAnthropicClient,
-  resolveModels,
-  runAgent,
-  type ClaudeClient,
-  type Models,
-  type ToolCall,
-  type ToolDefinition,
-  type ToolResult,
-} from './claude'
+import { resolveModels, type Llm, type Models } from './llm'
 import {
   HARD_STOP_RULES,
   approvalResumePrompt,
@@ -42,12 +34,20 @@ export type EngineStore = Pick<
   'saveRun' | 'getRunForEngine' | 'acquireRunLock' | 'releaseRunLock' | 'drainDecisions'
 >
 
-export type EngineGitHub = Pick<GitHubClient, 'listFiles' | 'readFile' | 'writeFile' | 'openPR'>
+export type EngineGitHub = Pick<GitHubClient, 'openPR'>
+
+// The runner's checkout. Agents edit files in dir. commit() stages, commits and pushes,
+// and resolves true when something was committed.
+export interface EngineWorkspace {
+  dir: string
+  commit(message: string): Promise<boolean>
+}
 
 export interface EngineDeps {
-  claude: ClaudeClient
-  github: (repo: string) => EngineGitHub
+  llm: Llm
   store: EngineStore
+  github: (repo: string) => EngineGitHub
+  workspace?: EngineWorkspace
   models: Models
   now: () => number
 }
@@ -60,54 +60,15 @@ export interface StepResult {
 }
 
 const LOCK_TTL_SEC = 300
-// Model calls per agent turn-loop. Exceeding this fails the attempt.
-const MAX_AGENT_CALLS = 8
+// Turns per agent work call. Passed to the Llm as maxTurns.
+export const AGENT_MAX_TURNS = 30
+const PLAN_MAX_TOKENS = 4000
+const FINAL_MAX_TOKENS = 4000
 const REPORT_STORE_CHARS = 4000
 const FINAL_REPORT_MAX_CHARS = 8000
 const EVENTS_MAX = 500
-const REPO_LIST_MAX = 500
-const REPO_READ_MAX_CHARS = 20_000
-const REPO_WRITE_MAX_CHARS = 100_000
 const CUT_EVENT = 'cut by agent limit: unit '
-
-// Thrown from a tool executor to stop the agent loop at once. The approval pauses only this agent.
-class ApprovalPause extends Error {}
-
-const APPROVAL_TOOL: ToolDefinition = {
-  name: 'request_approval',
-  description:
-    'Pause only this agent and ask the owner. Use only for a hard stop: 1 production deploy, 2 delete/force-push/migration, 3 new paid service or secrets, 4 exceeding budget.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      rule: { type: 'integer', enum: [1, 2, 3, 4] },
-      request: { type: 'string' },
-    },
-    required: ['rule', 'request'],
-  },
-}
-
-const REPO_TOOLS: ToolDefinition[] = [
-  {
-    name: 'list_files',
-    description: 'List files in the repo. Reads the run branch once it has writes.',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'read_file',
-    description: 'Read a repo file by relative path.',
-    input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
-  },
-  {
-    name: 'write_file',
-    description: 'Write a repo file. Writes go only to the run branch.',
-    input_schema: {
-      type: 'object',
-      properties: { path: { type: 'string' }, content: { type: 'string' } },
-      required: ['path', 'content'],
-    },
-  },
-]
+const COMMIT_PREFIX = 'workflwpro: '
 
 function addEvent(run: Run, message: string, now: number, agentId?: string) {
   run.events.push({ at: now, message, agentId })
@@ -316,7 +277,7 @@ export function applyDecisions(run: Run, decisions: ApprovalDecision[], now: num
   return msgs
 }
 
-// Reads the request_approval input. Rule numbers map to the hard stops in prompts.ts.
+// Reads an approval request (from the agent's reply or a decision). Rule numbers map to the hard stops in prompts.ts.
 export function parseApprovalInput(input: unknown): { kind: ApprovalKind; request: string } | null {
   if (typeof input !== 'object' || input === null) return null
   const { rule, request } = input as Record<string, unknown>
@@ -350,66 +311,26 @@ function systemFor(agent: Agent): string {
   return agent.role === 'lead' ? leadSystemPrompt() : workerSystemPrompt()
 }
 
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : ''
-}
+type AgentOutcome =
+  | { kind: 'done'; report: string }
+  | { kind: 'approval'; approval: { kind: ApprovalKind; request: string } }
 
-async function execRepoTool(call: ToolCall, run: Run, agent: Agent, deps: EngineDeps): Promise<ToolResult> {
-  const gh = deps.github(run.repo!)
-  const input = (call.input ?? {}) as Record<string, unknown>
-  if (call.name === 'list_files') {
-    const entries = await gh.listFiles(run.id)
-    return entries.slice(0, REPO_LIST_MAX).map((e) => e.path).join('\n') || '(no files)'
-  }
-  if (call.name === 'read_file') {
-    const file = await gh.readFile(run.id, str(input.path))
-    return clipReport(file.content, REPO_READ_MAX_CHARS)
-  }
-  if (call.name === 'write_file') {
-    const path = str(input.path)
-    const content = str(input.content)
-    if (content.length > REPO_WRITE_MAX_CHARS) throw new Error('file too large')
-    await gh.writeFile(run.id, path, content)
-    run.branch = branchForRun(run.id)
-    addEvent(run, `wrote ${path}`, deps.now(), agent.id)
-    return `ok: wrote ${path}`
-  }
-  return { content: `unknown tool ${call.name}`, isError: true }
-}
-
-type AgentOutcome = { kind: 'done'; report: string } | { kind: 'approval'; approval: { kind: ApprovalKind; request: string } }
-
-// One agent's turn loop. request_approval stops this agent right away, and only this agent.
+// One agent's work call. A request for approval comes back as a result, so it pauses only this agent.
 async function runOneAgent(agent: Agent, run: Run, deps: EngineDeps): Promise<AgentOutcome> {
-  const tools: ToolDefinition[] = [APPROVAL_TOOL]
-  if (run.repo && agent.role !== 'orchestrator') tools.push(...REPO_TOOLS)
-  const pause = new AbortController()
-  const state: { pending?: { kind: ApprovalKind; request: string } } = {}
-  try {
-    const res = await runAgent({
-      client: deps.claude,
-      model: agent.model,
-      system: systemFor(agent),
-      prompt: promptFor(agent, run),
-      tools,
-      maxTokens: 2000,
-      maxIterations: MAX_AGENT_CALLS,
-      signal: pause.signal,
-      executeTool: async (call) => {
-        if (call.name !== 'request_approval') return execRepoTool(call, run, agent, deps)
-        const req = parseApprovalInput(call.input)
-        if (!req) return { content: 'request_approval needs rule 1-4 and a request', isError: true }
-        state.pending = req
-        pause.abort(new ApprovalPause('paused for approval'))
-        return 'Paused. Wait for the owner.'
-      },
-    })
-    addUsage(run, agent, res.usage.input_tokens, res.usage.output_tokens)
-    return { kind: 'done', report: clipReport(res.text, REPORT_STORE_CHARS) }
-  } catch (err) {
-    if (err instanceof ApprovalPause && state.pending) return { kind: 'approval', approval: state.pending }
-    throw err
+  const res = await deps.llm.work({
+    model: agent.model,
+    system: systemFor(agent),
+    prompt: promptFor(agent, run),
+    cwd: deps.workspace?.dir,
+    maxTurns: AGENT_MAX_TURNS,
+  })
+  addUsage(run, agent, res.usage.input, res.usage.output)
+  if (res.approval) {
+    const req = parseApprovalInput(res.approval)
+    if (!req) throw new Error('approval request needs rule 1-4 and a request')
+    return { kind: 'approval', approval: req }
   }
+  return { kind: 'done', report: clipReport(res.text, REPORT_STORE_CHARS) }
 }
 
 async function save(run: Run, deps: EngineDeps, now: number) {
@@ -440,15 +361,13 @@ async function planStep(run: Run, deps: EngineDeps, now: number): Promise<StepRe
   run.status = 'planning'
   addEvent(run, 'Planning', now, orch.id)
   try {
-    const res = await runAgent({
-      client: deps.claude,
+    const res = await deps.llm.complete({
       model: deps.models.orchestrator,
       system: plannerSystemPrompt(),
       prompt: plannerUserPrompt(run.task, run.repo ? { repo: run.repo } : undefined),
-      maxTokens: 4000,
-      maxIterations: 1,
+      maxTokens: PLAN_MAX_TOKENS,
     })
-    addUsage(run, orch, res.usage.input_tokens, res.usage.output_tokens)
+    addUsage(run, orch, res.usage.input, res.usage.output)
     const { plan, cut } = capPlan(parsePlan(res.text), MAX_AGENTS)
     if (plan.units.length === 0) throw new Error('no units fit the agent cap')
     for (const id of cut) addEvent(run, `${CUT_EVENT}${id}`, now, orch.id)
@@ -480,6 +399,8 @@ async function planStep(run: Run, deps: EngineDeps, now: number): Promise<StepRe
   }
 }
 
+type Settled = { a: Agent; outcome: AgentOutcome } | { a: Agent; err: Error }
+
 async function waveStep(run: Run, ready: Agent[], deps: EngineDeps, now: number): Promise<StepResult> {
   for (const a of ready) {
     a.status = 'running'
@@ -493,14 +414,33 @@ async function waveStep(run: Run, ready: Agent[], deps: EngineDeps, now: number)
   const results = await Promise.all(
     ready.map((a) =>
       runOneAgent(a, run, deps).then(
-        (outcome) => ({ a, outcome }),
-        (err: unknown) => ({ a, err: err as Error }),
+        (outcome): Settled => ({ a, outcome }),
+        (err: unknown): Settled => ({ a, err: err as Error }),
       ),
     ),
   )
 
-  const end = deps.now()
+  // Commit after each agent, one at a time, so the checkout is never committed mid-edit by another agent.
+  // A commit that fails (e.g. push rejected) fails that agent's attempt.
+  const settled: Settled[] = []
   for (const r of results) {
+    if ('err' in r || !deps.workspace) {
+      settled.push(r)
+      continue
+    }
+    try {
+      if (await deps.workspace.commit(`${COMMIT_PREFIX}${r.a.id} ${r.a.title}`)) {
+        run.branch = branchForRun(run.id)
+        addEvent(run, `committed ${r.a.id}`, deps.now(), r.a.id)
+      }
+      settled.push(r)
+    } catch (err) {
+      settled.push({ a: r.a, err: err as Error })
+    }
+  }
+
+  const end = deps.now()
+  for (const r of settled) {
     const a = r.a
     if ('err' in r) {
       addEvent(run, failAgent(a, r.err.message, end).line, end, a.id)
@@ -538,15 +478,13 @@ async function finalStep(run: Run, deps: EngineDeps, now: number): Promise<StepR
   const units = run.agents.filter((a) => a.role !== 'orchestrator').map(toWorkerReport)
   const cut = run.events.filter((e) => e.message.startsWith(CUT_EVENT)).map((e) => e.message.slice(CUT_EVENT.length))
   try {
-    const res = await runAgent({
-      client: deps.claude,
+    const res = await deps.llm.complete({
       model: deps.models.orchestrator,
       system: finalSystemPrompt(),
       prompt: finalUserPrompt({ task: run.task, summary: run.plan?.summary ?? '', units, cut }),
-      maxTokens: 4000,
-      maxIterations: 1,
+      maxTokens: FINAL_MAX_TOKENS,
     })
-    addUsage(run, run.agents.find((a) => a.role === 'orchestrator'), res.usage.input_tokens, res.usage.output_tokens)
+    addUsage(run, run.agents.find((a) => a.role === 'orchestrator'), res.usage.input, res.usage.output)
     run.finalReport = clipReport(res.text, FINAL_REPORT_MAX_CHARS)
   } catch (err) {
     addEvent(run, `Final report failed, using unit reports: ${(err as Error).message}`, now)
@@ -556,11 +494,11 @@ async function finalStep(run: Run, deps: EngineDeps, now: number): Promise<StepR
     )
   }
 
-  // Opens a PR only when the run wrote to its branch. Never merges.
+  // Opens a PR only when agents committed to the run branch. Never merges.
   if (run.repo && run.branch) {
     try {
       const pr = await deps.github(run.repo).openPR(run.id, {
-        title: `MaxWorkflw: ${run.task.slice(0, 60)}`,
+        title: `workflwpro: ${run.task.slice(0, 60)}`,
         body: run.finalReport ?? '',
       })
       run.prUrl = pr.url
@@ -604,22 +542,6 @@ async function drive(runId: string, deps: EngineDeps): Promise<StepResult> {
   return finalStep(run, deps, now)
 }
 
-// Production wiring, built only when a step has no injected deps. Needs
-// ANTHROPIC_API_KEY, GITHUB_TOKEN and the Upstash env the store reads.
-function envDeps(): EngineDeps {
-  const env = process.env
-  return {
-    claude: createAnthropicClient({ apiKey: env.ANTHROPIC_API_KEY ?? '' }),
-    github: (repo) => {
-      const [owner, name] = repo.split('/')
-      return createGitHubClient({ owner, repo: name, token: env.GITHUB_TOKEN ?? '' })
-    },
-    store: getRunStore(),
-    models: resolveModels(env, true),
-    now: () => Date.now(),
-  }
-}
-
 let configured: Partial<EngineDeps> = {}
 
 // Sets default deps once at boot. step() also takes per-call overrides.
@@ -627,16 +549,23 @@ export function configureEngine(deps: Partial<EngineDeps>): void {
   configured = { ...configured, ...deps }
 }
 
+// The Llm has no default: the runner builds it (createClaudeCliLlm). The web app never runs steps.
 function resolveDeps(overrides: Partial<EngineDeps>): EngineDeps {
   const merged = { ...configured, ...overrides }
-  const env = merged.claude && merged.github && merged.store ? undefined : envDeps()
+  if (!merged.llm) throw new Error('engine has no Llm: pass llm in the step deps')
   return {
-    claude: merged.claude ?? env!.claude,
-    github: merged.github ?? env!.github,
-    store: merged.store ?? env!.store,
+    llm: merged.llm,
+    store: merged.store ?? getRunStore(),
+    github: merged.github ?? defaultGitHub,
+    workspace: merged.workspace,
     models: merged.models ?? resolveModels(),
     now: merged.now ?? (() => Date.now()),
   }
+}
+
+function defaultGitHub(repo: string): EngineGitHub {
+  const [owner, name] = repo.split('/')
+  return createGitHubClient({ owner, repo: name, token: process.env.GITHUB_TOKEN ?? '' })
 }
 
 // Does exactly one unit of work for the run, under the per-run lock.
