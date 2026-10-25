@@ -1,15 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createMagicToken,
   createOAuthState,
   createSession,
   isAllowed,
   isCronAuthorized,
-  isPlausibleEmail,
   isPublicPath,
   parseAllowlist,
-  verifyMagicToken,
   verifyOAuthState,
   verifySession,
 } from '../lib/auth';
@@ -17,7 +14,7 @@ import {
 const SECRET = 'test-secret-'.padEnd(40, 'x');
 const OTHER_SECRET = 'other-secret-'.padEnd(40, 'y');
 const NOW = 1_800_000_000;
-const ALLOWED = 'alice@example.com, Bob-GH ,carol@example.com';
+const ALLOWED = 'Bob-GH, carol-gh ,alice@example.com';
 const env = { SESSION_SECRET: SECRET, ALLOWED_USERS: ALLOWED };
 
 // Re-encode a token's payload while keeping its original signature, to check that
@@ -33,105 +30,91 @@ function payloadOf(token: string): Record<string, unknown> {
 
 test('allowlist: empty or unset denies everyone', () => {
   for (const raw of [undefined, '', '   ', ' , ,']) {
-    assert.equal(isAllowed({ email: 'alice@example.com', login: 'alice' }, raw), false);
+    assert.equal(isAllowed({ login: 'alice' }, raw), false);
   }
 });
 
-test('allowlist: emails and logins match case-insensitively', () => {
-  assert.equal(isAllowed({ email: 'ALICE@example.com' }, ALLOWED), true);
+test('allowlist: logins match case-insensitively', () => {
   assert.equal(isAllowed({ login: 'bob-gh' }, ALLOWED), true);
   assert.equal(isAllowed({ login: 'BOB-GH' }, ALLOWED), true);
+  assert.equal(isAllowed({ login: ' Carol-GH ' }, ALLOWED), true);
 });
 
-test('allowlist: unlisted identities are denied, and an email entry never matches a login', () => {
-  assert.equal(isAllowed({ email: 'mallory@example.com', login: 'mallory' }, ALLOWED), false);
-  assert.equal(isAllowed({ login: 'alice@example.com' }, ALLOWED), false);
-  assert.equal(isAllowed({ email: 'bob-gh' }, ALLOWED), false);
+test('allowlist: unlisted logins are denied, and no login means denied', () => {
+  assert.equal(isAllowed({ login: 'mallory' }, ALLOWED), false);
+  assert.equal(isAllowed({ login: null }, ALLOWED), false);
   assert.equal(isAllowed({}, ALLOWED), false);
 });
 
-test('parseAllowlist splits emails from logins', () => {
-  const { emails, logins } = parseAllowlist(ALLOWED);
-  assert.deepEqual([...emails].sort(), ['alice@example.com', 'carol@example.com']);
-  assert.deepEqual([...logins], ['bob-gh']);
+test('allowlist: entries containing "@" are skipped, so an email never grants access', () => {
+  assert.equal(isAllowed({ login: 'alice@example.com' }, ALLOWED), false);
+  assert.equal(isAllowed({ login: 'alice' }, ALLOWED), false);
+  assert.equal(isAllowed({ login: 'alice@example.com' }, 'alice@example.com'), false);
+});
+
+test('parseAllowlist keeps only GitHub logins, lowercased', () => {
+  assert.deepEqual([...parseAllowlist(ALLOWED)].sort(), ['bob-gh', 'carol-gh']);
+  assert.deepEqual([...parseAllowlist('a@b.co')], []);
 });
 
 test('session: sign then verify returns the owner id and display', async () => {
-  const token = await createSession({ method: 'github', login: 'Bob-GH', email: 'alice@example.com' }, SECRET, NOW);
+  const token = await createSession({ method: 'github', login: 'Bob-GH' }, SECRET, NOW);
   const user = await verifySession(token, env, NOW + 1);
   assert.deepEqual(user, { id: 'github:bob-gh', method: 'github', display: 'bob-gh' });
 });
 
-test('session: magic-link users are keyed by email', async () => {
-  const token = await createSession({ method: 'magic_link', email: 'Alice@Example.com' }, SECRET, NOW);
-  const user = await verifySession(token, env, NOW);
-  assert.deepEqual(user, { id: 'email:alice@example.com', method: 'magic_link', display: 'alice@example.com' });
+test('session: rejected when the login is not on the allowlist', async () => {
+  const token = await createSession({ method: 'github', login: 'mallory' }, SECRET, NOW);
+  assert.equal(await verifySession(token, env, NOW), null);
 });
 
 test('session: rejected when signed with another secret', async () => {
-  const token = await createSession({ method: 'magic_link', email: 'alice@example.com' }, OTHER_SECRET, NOW);
+  const token = await createSession({ method: 'github', login: 'bob-gh' }, OTHER_SECRET, NOW);
   assert.equal(await verifySession(token, env, NOW), null);
 });
 
 test('session: rejected when the payload is altered', async () => {
-  const token = await createSession({ method: 'magic_link', email: 'mallory@example.com' }, SECRET, NOW);
-  const forged = swapPayload(token, { ...payloadOf(token), email: 'alice@example.com' });
+  const token = await createSession({ method: 'github', login: 'mallory' }, SECRET, NOW);
+  const forged = swapPayload(token, { ...payloadOf(token), login: 'bob-gh' });
+  assert.equal(await verifySession(forged, env, NOW), null);
+});
+
+test('session: rejected when the method is not github', async () => {
+  const token = await createSession({ method: 'github', login: 'bob-gh' }, SECRET, NOW);
+  const forged = swapPayload(token, { ...payloadOf(token), method: 'magic_link' });
+  // Editing the payload breaks the signature, so this fails on the signature, not the method check.
   assert.equal(await verifySession(forged, env, NOW), null);
 });
 
 test('session: rejected after expiry', async () => {
-  const token = await createSession({ method: 'magic_link', email: 'alice@example.com' }, SECRET, NOW);
+  const token = await createSession({ method: 'github', login: 'bob-gh' }, SECRET, NOW);
   const exp = payloadOf(token).exp as number;
   assert.ok(await verifySession(token, env, exp - 1));
   assert.equal(await verifySession(token, env, exp), null);
 });
 
 test('session: revoked when the user is removed from the allowlist', async () => {
-  const token = await createSession({ method: 'magic_link', email: 'alice@example.com' }, SECRET, NOW);
-  assert.equal(await verifySession(token, { ...env, ALLOWED_USERS: 'carol@example.com' }, NOW), null);
+  const token = await createSession({ method: 'github', login: 'bob-gh' }, SECRET, NOW);
+  assert.equal(await verifySession(token, { ...env, ALLOWED_USERS: 'carol-gh' }, NOW), null);
 });
 
-test('session: a magic link or OAuth state token is not accepted as a session', async () => {
-  const magic = await createMagicToken('alice@example.com', SECRET, NOW);
+test('session: an OAuth state token is not accepted as a session', async () => {
   const state = await createOAuthState(SECRET, NOW);
-  assert.equal(await verifySession(magic, env, NOW), null);
   assert.equal(await verifySession(state, env, NOW), null);
 });
 
 test('session: fails closed with a missing or short secret', async () => {
-  const token = await createSession({ method: 'magic_link', email: 'alice@example.com' }, SECRET, NOW);
+  const token = await createSession({ method: 'github', login: 'bob-gh' }, SECRET, NOW);
   assert.equal(await verifySession(token, { ...env, SESSION_SECRET: undefined }, NOW), null);
   assert.equal(await verifySession(token, { ...env, SESSION_SECRET: 'short' }, NOW), null);
-  await assert.rejects(createSession({ method: 'magic_link', email: 'alice@example.com' }, 'short', NOW));
-  await assert.rejects(createSession({ method: 'magic_link', email: 'alice@example.com' }, undefined, NOW));
+  await assert.rejects(createSession({ method: 'github', login: 'bob-gh' }, 'short', NOW));
+  await assert.rejects(createSession({ method: 'github', login: 'bob-gh' }, undefined, NOW));
 });
 
 test('session: malformed tokens return null and never throw', async () => {
   for (const junk of [undefined, '', 'nodot', 'a.b.c', '!!!.***', '.', 'e30.']) {
     assert.equal(await verifySession(junk, env, NOW), null);
   }
-});
-
-test('magic link: round trip for an allowed address', async () => {
-  const token = await createMagicToken('Alice@Example.com', SECRET, NOW);
-  assert.equal(await verifyMagicToken(token, env, NOW + 60), 'alice@example.com');
-});
-
-test('magic link: expires after 15 minutes', async () => {
-  const token = await createMagicToken('alice@example.com', SECRET, NOW);
-  assert.equal(await verifyMagicToken(token, env, NOW + 15 * 60), null);
-});
-
-test('magic link: an address removed from the allowlist can no longer sign in', async () => {
-  const token = await createMagicToken('alice@example.com', SECRET, NOW);
-  assert.equal(await verifyMagicToken(token, { ...env, ALLOWED_USERS: '' }, NOW), null);
-});
-
-test('magic link: tampered or wrong-secret tokens are rejected', async () => {
-  const token = await createMagicToken('alice@example.com', SECRET, NOW);
-  const forged = swapPayload(token, { ...payloadOf(token), email: 'carol@example.com' });
-  assert.equal(await verifyMagicToken(forged, env, NOW), null);
-  assert.equal(await verifyMagicToken(token, { ...env, SESSION_SECRET: OTHER_SECRET }, NOW), null);
 });
 
 test('oauth state: accepted only when the signed value matches the cookie', async () => {
@@ -188,11 +171,4 @@ test('cron: only the exact CRON_SECRET bearer passes, and only on internal paths
   assert.equal(isCronAuthorized('/api/runs/abc123/approvals/x', good, cronEnv), false);
   assert.equal(isCronAuthorized('/api/runs/a/b/step', good, cronEnv), false);
   assert.equal(isCronAuthorized('/', good, cronEnv), false);
-});
-
-test('isPlausibleEmail accepts ordinary addresses and rejects junk', () => {
-  assert.equal(isPlausibleEmail('alice@example.com'), true);
-  assert.equal(isPlausibleEmail('no-at-sign'), false);
-  assert.equal(isPlausibleEmail('a b@example.com'), false);
-  assert.equal(isPlausibleEmail(`${'a'.repeat(250)}@x.co`), false);
 });
