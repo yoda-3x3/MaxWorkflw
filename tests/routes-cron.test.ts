@@ -11,30 +11,35 @@ const SESSION_SECRET_VALUE = "test-session-secret-0123456789abcdef";
 const alice = "alice@example.com";
 
 let saved: Record<string, string | undefined>;
-let dispatched: Array<{ url: string; authorization: string | null }>;
+// Mocked dispatch: every outbound fetch is recorded, never sent. Dispatch (GitHub workflow_dispatch
+// via dispatchRun, or a kick) carries the run id in the URL or the body.
+let dispatched: Array<{ url: string; authorization: string | null; body: string }>;
 const realFetch = globalThis.fetch;
+
+function dispatchedFor(runId: string) {
+  return dispatched.filter((d) => d.url.includes(runId) || d.body.includes(runId));
+}
 
 beforeEach(() => {
   saved = {
     CRON_SECRET: process.env.CRON_SECRET,
     SESSION_SECRET: process.env.SESSION_SECRET,
     ALLOWED_USERS: process.env.ALLOWED_USERS,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
   };
   process.env.CRON_SECRET = SECRET;
   process.env.SESSION_SECRET = SESSION_SECRET_VALUE;
   process.env.ALLOWED_USERS = alice;
+  process.env.GITHUB_TOKEN = "test-github-token";
 
-  // Mocked dispatch: records every kick instead of calling the step route.
   dispatched = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     dispatched.push({
       url: String(input),
       authorization: new Headers(init?.headers).get("authorization"),
+      body: typeof init?.body === "string" ? init.body : "",
     });
-    return new Response(JSON.stringify({ accepted: true }), {
-      status: 202,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(null, { status: 204 });
   }) as typeof fetch;
 });
 
@@ -115,7 +120,7 @@ describe("cron kick: auth", () => {
 });
 
 describe("cron kick: dispatch", () => {
-  test("the exact bearer kicks each active run by id with the cron secret", async () => {
+  test("the exact bearer re-kicks each active run by id", async () => {
     const a = `run-${Math.random().toString(36).slice(2)}`;
     const b = `run-${Math.random().toString(36).slice(2)}`;
     await getRunStore().saveRun(run("running", a));
@@ -126,16 +131,17 @@ describe("cron kick: dispatch", () => {
     const body = (await res.json()) as { kicked: number };
     assert.ok(body.kicked >= 2);
 
-    const urls = dispatched.map((d) => d.url);
-    assert.ok(urls.includes(`https://app.test/api/runs/${a}/step`), "run a kicked");
-    assert.ok(urls.includes(`https://app.test/api/runs/${b}/step`), "run b kicked");
-    for (const d of dispatched) assert.equal(d.authorization, `Bearer ${SECRET}`);
+    // The dispatch runs after the response; let the queued task settle.
+    await new Promise((r) => setImmediate(r));
+    assert.ok(dispatchedFor(a).length >= 1, "run a dispatched");
+    assert.ok(dispatchedFor(b).length >= 1, "run b dispatched");
   });
 
   test("a terminal run is not kicked", async () => {
     const done = `run-${Math.random().toString(36).slice(2)}`;
     await getRunStore().saveRun(run("done", done));
     await cronKick(cronGet({ authorization: `Bearer ${SECRET}` }));
-    assert.ok(!dispatched.some((d) => d.url.includes(`/api/runs/${done}/`)));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(dispatchedFor(done).length, 0);
   });
 });
