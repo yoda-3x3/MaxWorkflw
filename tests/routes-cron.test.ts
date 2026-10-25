@@ -124,7 +124,7 @@ describe("cron kick: dispatch", () => {
     const a = `run-${Math.random().toString(36).slice(2)}`;
     const b = `run-${Math.random().toString(36).slice(2)}`;
     await getRunStore().saveRun(run("running", a));
-    await getRunStore().saveRun(run("waiting_approval", b));
+    await getRunStore().saveRun(run("running", b));
 
     const res = await cronKick(cronGet({ authorization: `Bearer ${SECRET}` }));
     assert.equal(res.status, 200);
@@ -135,6 +135,14 @@ describe("cron kick: dispatch", () => {
     await new Promise((r) => setTimeout(r, 20));
     assert.ok(dispatchedFor(a).length >= 1, "run a dispatched");
     assert.ok(dispatchedFor(b).length >= 1, "run b dispatched");
+  });
+
+  test("a run waiting on approval is not re-dispatched by the cron", async () => {
+    const waiting = `run-${Math.random().toString(36).slice(2)}`;
+    await getRunStore().saveRun(run("waiting_approval", waiting));
+    await cronKick(cronGet({ authorization: `Bearer ${SECRET}` }));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(dispatchedFor(waiting).length, 0);
   });
 
   test("a terminal run is not kicked", async () => {
