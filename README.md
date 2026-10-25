@@ -163,6 +163,16 @@ Other scripts:
 - **Concurrency is one job per run.** A second dispatch for the same run waits for the first.
 - **GitHub rate limits and Claude subscription limits** apply. A run that hits a limit retries later, or fails and reports the error.
 
+## Residual risks
+
+The env allowlist and the Bash deny-list reduce exposure. They do not make the runner a sandbox. Known gaps:
+
+- **Same-user process reads.** The runner deletes `GH_REPO_TOKEN` and the Upstash variables from its own `process.env`, but deleting a variable only unsets it in that process. Agent-run code runs as the same Linux user, so it may still read the runner's environment through `/proc/<pid>/environ` and its memory. Treat `GH_REPO_TOKEN`, the Upstash credentials, and `CLAUDE_CODE_OAUTH_TOKEN` as readable by agent-run code.
+- **The Bash deny-list is best-effort.** `--disallowedTools` blocks named patterns such as `Bash(git push:*)` and `Bash(gh:*)`. Shell code can reach the same actions by other routes (scripts, interpreters, `curl`). Do not rely on it to stop a determined agent.
+- **Anyone with write access can dispatch.** Anyone who can run workflows on this repo can dispatch `run.yml` on any ref, and that job receives the repo secrets. Restrict write and Actions access to the repo. Consider a GitHub Environment with required reviewers that holds the secrets; `run.yml` does not reference one yet.
+- **Scope the tokens.** Make `GH_REPO_TOKEN` a fine-grained personal access token limited to the repos you need, with contents and pull requests access only and no admin or delete rights. Limit the Vercel `GITHUB_TOKEN` to `actions: write` on the dispatch repo. Rotate tokens on a schedule and right away if you suspect exposure. Pin third-party Actions to commit SHAs instead of tags.
+- **Review before merging.** Agent code writes the PR diff. Review it before you press Merge. The Merge step does not run tests or checks for you.
+
 ## API
 
 All routes require a signed session, except `/api/auth/*`. The cron route accepts only `Authorization: Bearer $CRON_SECRET`.
