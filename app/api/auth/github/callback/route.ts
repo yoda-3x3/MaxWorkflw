@@ -10,13 +10,8 @@ import {
   verifyOAuthState,
 } from '../../../../../lib/auth';
 
-interface GitHubIdentity {
-  login: string;
-  verifiedEmails: string[];
-}
-
-// Exchanges the code and fetches the user plus verified emails. Returns null on any upstream failure.
-async function fetchGitHubIdentity(code: string, redirectUri: string): Promise<GitHubIdentity | null> {
+// Exchanges the code and fetches the user's login. Returns null on any upstream failure.
+async function fetchGitHubLogin(code: string, redirectUri: string): Promise<string | null> {
   const clientId = process.env.GITHUB_CLIENT_ID;
   const clientSecret = process.env.GITHUB_CLIENT_SECRET;
   if (!clientId || !clientSecret) return null;
