@@ -1,0 +1,48 @@
+name: run
+
+# Advances one run with the engine. Dispatched by the cron (or by hand) with the run id.
+# Never set ANTHROPIC_API_KEY here: agents bill through CLAUDE_CODE_OAUTH_TOKEN.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Run id to advance
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One job per run at a time. A second dispatch waits instead of cancelling mid-step.
+concurrency:
+  group: run-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    # Only manual or cron dispatches advance runs. Other events never get secrets.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm i -g @anthropic-ai/claude-code
+
+      - name: Advance run
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          GH_REPO_TOKEN: ${{ secrets.GH_REPO_TOKEN }}
+        run: npx tsx scripts/runner.ts
