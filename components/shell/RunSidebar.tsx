@@ -1,0 +1,108 @@
+"use client";
+
+import { useState, type FormEvent } from "react";
+import type { RunIndexEntry } from "../../lib/types";
+import { timeAgo } from "./format";
+
+interface Props {
+  open: boolean;
+  runs: RunIndexEntry[] | undefined;
+  error: string | null;
+  selectedId: string | null;
+  now: number;
+  creating: boolean;
+  createError: string | null;
+  onSelect: (id: string) => void;
+  onCreate: (input: { task: string; repo?: string }) => void;
+}
+
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export function RunSidebar({
+  open,
+  runs,
+  error,
+  selectedId,
+  now,
+  creating,
+  createError,
+  onSelect,
+  onCreate,
+}: Props) {
+  const [task, setTask] = useState("");
+  const [repo, setRepo] = useState("");
+  const [repoError, setRepoError] = useState<string | null>(null);
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    const trimmedRepo = repo.trim();
+    if (trimmedRepo && !REPO_RE.test(trimmedRepo)) {
+      setRepoError("Use owner/name, e.g. yoda-3x3/MaxWorkflw");
+      return;
+    }
+    setRepoError(null);
+    const trimmedTask = task.trim();
+    if (!trimmedTask) return;
+    onCreate({ task: trimmedTask, repo: trimmedRepo || undefined });
+    setTask("");
+  }
+
+  return (
+    <aside className="sidebar" data-open={open} data-no-gesture aria-label="Runs">
+      <form className="new-run" onSubmit={submit}>
+        <h2>New run</h2>
+        <label>
+          Task
+          <textarea
+            value={task}
+            onChange={(e) => setTask(e.target.value)}
+            rows={4}
+            placeholder="What should the team do?"
+            required
+          />
+        </label>
+        <label>
+          Repo (optional)
+          <input
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            placeholder="owner/name"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        {repoError && <p className="form-error">{repoError}</p>}
+        {createError && <p className="form-error">{createError}</p>}
+        <button type="submit" className="primary" disabled={creating || !task.trim()}>
+          {creating ? "Starting…" : "Start run"}
+        </button>
+      </form>
+
+      <section className="history">
+        <h2>History</h2>
+        {error && <p className="form-error">Could not load runs: {error}</p>}
+        {!runs && !error && <p className="muted">Loading…</p>}
+        {runs && runs.length === 0 && <p className="muted">No runs yet.</p>}
+        <ul>
+          {runs?.map((r) => (
+            <li key={r.id}>
+              <button
+                type="button"
+                className="history-item"
+                aria-current={r.id === selectedId ? "true" : undefined}
+                onClick={() => onSelect(r.id)}
+              >
+                <span className="history-task">{r.task}</span>
+                <span className="history-meta">
+                  <span className={`status status-${r.status}`}>{r.status.replace("_", " ")}</span>
+                  {r.repo && <span>{r.repo}</span>}
+                  <span>{timeAgo(r.createdAt, now)}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </aside>
+  );
+}
