@@ -39,7 +39,7 @@ function closestElement(target: EventTarget | null): Element | null {
   return target instanceof Element ? target : null;
 }
 
-function isEditable(el: Element): boolean {
+function isIgnoredTarget(el: Element): boolean {
   return el.closest(GESTURE_IGNORE_SELECTOR) !== null;
 }
 
@@ -79,16 +79,18 @@ export function useGestures(onAction: GestureActionHandler, options: UseGestures
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (!e.isPrimary && active) {
-        multiTouch = true;
-        if (active) clearLongPress(active);
+      if (active) {
+        // A second finger cancels long-press and turns the gesture into a multi-touch no-op.
+        if (!e.isPrimary) {
+          multiTouch = true;
+          clearLongPress(active);
+        }
         return;
       }
-      if (active) return;
       if (e.button !== 0) return;
 
       const target = closestElement(e.target);
-      if (!target || isEditable(target)) return;
+      if (!target || isIgnoredTarget(target)) return;
 
       multiTouch = false;
       const agentEl = target.closest('[data-agent-id]');
@@ -141,8 +143,7 @@ export function useGestures(onAction: GestureActionHandler, options: UseGestures
       p.track.end = { x: e.clientX, y: e.clientY, t: e.timeStamp };
       if (isTap(p.track)) {
         // Double-tap on empty space toggles fullscreen. Taps on agents or controls reset the pair.
-        const emptyArea = p.agentId === null && p.target.closest(NOT_EMPTY_SELECTOR) === null;
-        if (!emptyArea) {
+        if (p.target.closest(NOT_EMPTY_SELECTOR) !== null) {
           lastTap = null;
           return;
         }
@@ -171,7 +172,7 @@ export function useGestures(onAction: GestureActionHandler, options: UseGestures
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
       const target = closestElement(e.target);
-      if (target && isEditable(target)) return;
+      if (target && isIgnoredTarget(target)) return;
       const action = keyToAction(e.key);
       if (action) emit(action);
     };
