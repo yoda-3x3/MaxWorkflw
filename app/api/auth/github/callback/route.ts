@@ -10,13 +10,8 @@ import {
   verifyOAuthState,
 } from '../../../../../lib/auth';
 
-interface GitHubIdentity {
-  login: string;
-  verifiedEmails: string[];
-}
-
-// Exchanges the code and fetches the user plus verified emails. Returns null on any upstream failure.
-async function fetchGitHubIdentity(code: string, redirectUri: string): Promise<GitHubIdentity | null> {
+// Exchanges the code and fetches the GitHub login. Returns null on any upstream failure.
+async function fetchGitHubLogin(code: string, redirectUri: string): Promise<string | null> {
   const clientId = process.env.GITHUB_CLIENT_ID;
   const clientSecret = process.env.GITHUB_CLIENT_SECRET;
   if (!clientId || !clientSecret) return null;
@@ -31,26 +26,18 @@ async function fetchGitHubIdentity(code: string, redirectUri: string): Promise<G
   const { access_token: accessToken } = (await tokenRes.json()) as { access_token?: string };
   if (!accessToken) return null;
 
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-    'User-Agent': 'maxworkflw',
-  };
-  const signal = AbortSignal.timeout(10_000);
-  const [userRes, emailsRes] = await Promise.all([
-    fetch('https://api.github.com/user', { headers, signal }),
-    fetch('https://api.github.com/user/emails', { headers, signal }),
-  ]);
+  const userRes = await fetch('https://api.github.com/user', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'maxworkflw',
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
   if (!userRes.ok) return null;
   const user = (await userRes.json()) as { login: string };
-
-  let verifiedEmails: string[] = [];
-  if (emailsRes.ok) {
-    const emails = (await emailsRes.json()) as Array<{ email: string; verified: boolean }>;
-    verifiedEmails = emails.filter((e) => e.verified).map((e) => e.email);
-  }
-  return { login: user.login, verifiedEmails };
+  return user.login;
 }
 
 export async function GET(req: NextRequest) {
@@ -71,18 +58,11 @@ export async function GET(req: NextRequest) {
   const code = url.searchParams.get('code');
   if (!stateOk || !code) return fail('state');
 
-  const identity = await fetchGitHubIdentity(code, new URL('/api/auth/github/callback', req.url).toString());
-  if (!identity) return fail('github');
+  const login = await fetchGitHubLogin(code, new URL('/api/auth/github/callback', req.url).toString());
+  if (!login) return fail('github');
+  if (!isAllowed({ login }, env.ALLOWED_USERS)) return fail('denied');
 
-  const matchedEmail = identity.verifiedEmails.find((email) => isAllowed({ email }, env.ALLOWED_USERS));
-  const allowedByLogin = isAllowed({ login: identity.login }, env.ALLOWED_USERS);
-  if (!matchedEmail && !allowedByLogin) return fail('denied');
-
-  const session = await createSession(
-    { method: 'github', login: identity.login, email: matchedEmail ?? null },
-    env.SESSION_SECRET,
-    nowSeconds(),
-  );
+  const session = await createSession({ method: 'github', login }, env.SESSION_SECRET, nowSeconds());
   const res = NextResponse.redirect(new URL('/', req.url));
   res.cookies.delete(OAUTH_STATE_COOKIE);
   res.cookies.set(SESSION_COOKIE, session, cookieOptions(SESSION_TTL_SECONDS));

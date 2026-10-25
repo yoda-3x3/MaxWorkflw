@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   const url = new URL('https://github.com/login/oauth/authorize');
   url.searchParams.set('client_id', clientId);
   url.searchParams.set('redirect_uri', new URL('/api/auth/github/callback', req.url).toString());
-  url.searchParams.set('scope', 'read:user user:email');
+  url.searchParams.set('scope', 'read:user');
   url.searchParams.set('state', state);
   url.searchParams.set('allow_signup', 'false');
 
