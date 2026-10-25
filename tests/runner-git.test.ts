@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
+import { join } from 'node:path'
 import {
   basicAuthHeader,
   buildCheckoutArgs,
@@ -136,7 +138,7 @@ test('prepareWorkspace clones, branches from the default branch, and cleans up',
   assert.deepEqual(checkout.args, ['checkout', '-B', 'workflwpro/r1', 'origin/main'])
 
   await ws.cleanup()
-  assert.deepEqual(removed, [join('/tmp/fake-root')])
+  assert.deepEqual(removed, ['/tmp/fake-root'])
 })
 
 test('prepareWorkspace reuses an existing remote branch', async () => {
