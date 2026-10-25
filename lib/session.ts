@@ -3,7 +3,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { after } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
-import { dispatchRunWorkflow, getDispatchConfig } from "@/lib/gh-dispatch";
 import type { SessionUser } from "@/lib/types";
 
 /** Reads one cookie value from the request, or undefined. */
