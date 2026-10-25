@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/cron/kick",
+      "schedule": "0 0 * * *"
+    }
+  ],
+  "functions": {
+    "app/api/runs/[id]/step/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/runs/[id]/kick/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/cron/kick/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
