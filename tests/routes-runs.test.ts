@@ -16,9 +16,20 @@ const aliceId = `email:${alice}`;
 const CRON_SECRET_VALUE = "test-cron-secret-value";
 
 let saved: Record<string, string | undefined>;
-// Mocked dispatch: kickStep calls global fetch against the step route. Recorded, never sent.
-let dispatched: Array<{ url: string; authorization: string | null }>;
+// Mocked dispatch: dispatchRun reaches GitHub through global fetch (workflow_dispatch with
+// inputs.run_id). Every outbound call is recorded and never sent.
+let dispatched: Array<{ url: string; authorization: string | null; body: string }>;
 const realFetch = globalThis.fetch;
+
+/** Dispatch calls that carry this run id (URL or body). */
+function dispatchedFor(runId: string) {
+  return dispatched.filter((d) => d.url.includes(runId) || d.body.includes(runId));
+}
+
+/** dispatchRun starts after the response (after() runs inline in tests), so let it settle. */
+async function settle(ms = 20) {
+  await new Promise((r) => setTimeout(r, ms));
+}
 
 beforeEach(() => {
   saved = {
@@ -30,11 +41,15 @@ beforeEach(() => {
   process.env.SESSION_SECRET = SESSION_SECRET_VALUE;
   process.env.ALLOWED_USERS = `${alice},bob`;
   process.env.CRON_SECRET = CRON_SECRET_VALUE;
-  delete process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "test-github-token";
 
   dispatched = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    dispatched.push({ url: String(input), authorization: new Headers(init?.headers).get("authorization") });
+    dispatched.push({
+      url: String(input),
+      authorization: new Headers(init?.headers).get("authorization"),
+      body: typeof init?.body === "string" ? init.body : "",
+    });
     return new Response(JSON.stringify({ accepted: true }), { status: 202, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
 });
@@ -141,16 +156,37 @@ describe("run ownership", () => {
     assert.deepEqual(dispatched, []);
   });
 
-  test("the owner's kick of an active run dispatches the step route with the cron secret", async () => {
+  test("the owner's kick of an active run stale for over 90s dispatches the run id", async () => {
+    // seedRun sets updatedAt: 1, which is far older than 90s.
     const runId = await seedRun();
     const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await aliceCookie()), {
       params: Promise.resolve({ id: runId }),
     });
     assert.equal(res.status, 202);
     assert.deepEqual(await res.json(), { status: "waiting_approval", kicked: true });
-    assert.deepEqual(dispatched, [
-      { url: `https://app.test/api/runs/${runId}/step`, authorization: `Bearer ${CRON_SECRET_VALUE}` },
-    ]);
+    await settle();
+    assert.equal(dispatchedFor(runId).length, 1);
+  });
+
+  test("a kick within 90s of the last update answers kicked:false and dispatches nothing", async () => {
+    const runId = await seedRun({ updatedAt: Date.now() - 30_000 });
+    const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { status: "waiting_approval", kicked: false });
+    await settle();
+    assert.equal(dispatchedFor(runId).length, 0);
+  });
+
+  test("a kick just past 90s since the last update does dispatch", async () => {
+    const runId = await seedRun({ updatedAt: Date.now() - 91_000 });
+    const res = await kickRun(post(`https://app.test/api/runs/${runId}/kick`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 202);
+    await settle();
+    assert.equal(dispatchedFor(runId).length, 1);
   });
 
   test("the owner's kick of a finished run answers kicked:false and dispatches nothing", async () => {
@@ -253,17 +289,21 @@ describe("approval decide", () => {
       order.push("enqueue");
       return realEnqueue(id, decision);
     };
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      order.push(`dispatch ${String(input)}`);
-      return new Response(null, { status: 202 });
+    const realFetchStub = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (String(input).includes("/dispatches") && body.includes(runId)) order.push("dispatch");
+      return new Response(null, { status: 204 });
     }) as typeof fetch;
     try {
       const res = await decide(post(url(runId, `${runId}-pending`), await aliceCookie(), { decision: "approve" }), {
         params: Promise.resolve({ id: runId, approvalId: `${runId}-pending` }),
       });
       assert.equal(res.status, 202);
-      assert.deepEqual(order, ["enqueue", `dispatch https://app.test/api/runs/${runId}/step`]);
+      await settle();
+      assert.deepEqual(order, ["enqueue", "dispatch"]);
     } finally {
+      globalThis.fetch = realFetchStub;
       store.enqueueDecision = realEnqueue;
       await store.drainDecisions(runId, 10);
     }

@@ -132,7 +132,7 @@ describe("cron kick: dispatch", () => {
     assert.ok(body.kicked >= 2);
 
     // The dispatch runs after the response; let the queued task settle.
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 20));
     assert.ok(dispatchedFor(a).length >= 1, "run a dispatched");
     assert.ok(dispatchedFor(b).length >= 1, "run b dispatched");
   });
@@ -141,7 +141,7 @@ describe("cron kick: dispatch", () => {
     const done = `run-${Math.random().toString(36).slice(2)}`;
     await getRunStore().saveRun(run("done", done));
     await cronKick(cronGet({ authorization: `Bearer ${SECRET}` }));
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 20));
     assert.equal(dispatchedFor(done).length, 0);
   });
 });
