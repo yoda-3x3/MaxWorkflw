@@ -123,6 +123,7 @@ export function Shell() {
 
       <main className="shell-main">
         <div className="shell-toolbar">
+          <span className="brand">WorkflwPro</span>
           <button
             type="button"
             onClick={() => dispatch({ type: "toggle-sidebar" })}

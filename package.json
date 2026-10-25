@@ -1,5 +1,5 @@
 {
-  "name": "maxworkflw",
+  "name": "workflwpro",
   "version": "0.1.0",
   "description": "Web dashboard for running a 3-tier agent team (Orchestrator -> Lead -> Worker) from any browser.",
   "scripts": {

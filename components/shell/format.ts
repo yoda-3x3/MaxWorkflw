@@ -47,6 +47,11 @@ export function timeAgo(then: number, now: number): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
+/** True while a run is queued and no agent has started yet: the cloud runner is picking it up. */
+export function isRunnerStarting(run: { status: string; agents: { status: string }[] }): boolean {
+  return run.status === "queued" && run.agents.every((a) => a.status === "queued");
+}
+
 /** PR label for display, e.g. "owner/name#12". Null until both repo and PR number exist. */
 export function prLabel(repo: string | undefined, prNumber: number | undefined): string | null {
   if (!repo || prNumber === undefined) return null;

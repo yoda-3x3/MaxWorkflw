@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import type { Quote } from "../../app/api/ticker/parse";
+import { quotesFromResponse } from "./quotes";
 import "./ticker.css";
 
 const REFRESH_MS = 60_000;
@@ -42,8 +43,8 @@ export default function StockTicker() {
       try {
         const res = await fetch("/api/ticker", { cache: "no-store", signal: controller.signal });
         if (!res.ok) return;
-        const data = (await res.json()) as { quotes?: Quote[] };
-        if (alive && Array.isArray(data.quotes)) setQuotes(data.quotes);
+        const next = quotesFromResponse(await res.json());
+        if (alive) setQuotes(next);
       } catch {
         // Network error or abort: keep the previous quotes on screen.
       }
