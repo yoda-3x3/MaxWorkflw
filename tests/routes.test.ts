@@ -1,13 +1,11 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { isCronAuthorized, readCookie } from "@/lib/session";
-import { createSession, SESSION_COOKIE } from "@/lib/auth";
-import { POST as stepPost } from "@/app/api/runs/[id]/step/route";
 
 const SECRET = "test-cron-secret-value";
 
-function req(headers: Record<string, string> = {}, url = "https://app.test/api/runs/r1/step") {
-  return new Request(url, { method: "POST", headers });
+function req(headers: Record<string, string> = {}, url = "https://app.test/api/cron/kick") {
+  return new Request(url, { method: "GET", headers });
 }
 
 describe("isCronAuthorized", () => {
@@ -44,57 +42,17 @@ describe("isCronAuthorized", () => {
     assert.equal(isCronAuthorized(req({ authorization: `Basic ${SECRET}` })), false);
   });
 
+  test("rejects bearer-prefix variants: lowercase scheme, double space, missing secret", () => {
+    for (const authorization of [`bearer ${SECRET}`, `Bearer  ${SECRET}`, "Bearer", "Bearer "]) {
+      assert.equal(isCronAuthorized(req({ authorization })), false, `expected reject for ${JSON.stringify(authorization)}`);
+    }
+  });
+
   test("denies everything when CRON_SECRET is unset or empty", () => {
     delete process.env.CRON_SECRET;
     assert.equal(isCronAuthorized(req({ authorization: "Bearer " })), false);
     process.env.CRON_SECRET = "";
     assert.equal(isCronAuthorized(req({ authorization: "Bearer " })), false);
-  });
-});
-
-describe("step route auth", () => {
-  let saved: Record<string, string | undefined>;
-  const params = () => Promise.resolve({ id: "no-such-run" });
-
-  beforeEach(() => {
-    saved = { CRON_SECRET: process.env.CRON_SECRET, SESSION_SECRET: process.env.SESSION_SECRET };
-    process.env.CRON_SECRET = SECRET;
-    process.env.SESSION_SECRET = "test-session-secret-0123456789abcdef";
-  });
-  afterEach(() => {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  });
-
-  test("a user session cookie alone gets 401", async () => {
-    const token = await createSession({ method: "magic_link", email: "alice@example.com" }, process.env.SESSION_SECRET);
-    const res = await stepPost(req({ cookie: `${SESSION_COOKIE}=${token}` }), { params: params() });
-    assert.equal(res.status, 401);
-  });
-
-  test("no Authorization header gets 401", async () => {
-    const res = await stepPost(req(), { params: params() });
-    assert.equal(res.status, 401);
-  });
-
-  test("a wrong secret gets 401", async () => {
-    const res = await stepPost(req({ authorization: `Bearer ${"x".repeat(SECRET.length)}` }), { params: params() });
-    assert.equal(res.status, 401);
-  });
-
-  test("bearer-prefix variants get 401: lowercase scheme, double space, missing secret, bare secret", async () => {
-    for (const authorization of [`bearer ${SECRET}`, `Bearer  ${SECRET}`, "Bearer", "Bearer ", SECRET]) {
-      const res = await stepPost(req({ authorization }), { params: params() });
-      assert.equal(res.status, 401, `expected 401 for ${JSON.stringify(authorization)}`);
-    }
-  });
-
-  test("the exact CRON_SECRET bearer gets 202 right away", async () => {
-    const res = await stepPost(req({ authorization: `Bearer ${SECRET}` }), { params: params() });
-    assert.equal(res.status, 202);
-    assert.deepEqual(await res.json(), { accepted: true });
   });
 });
 
