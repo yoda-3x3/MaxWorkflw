@@ -137,16 +137,14 @@ function ownerId(login: string): string {
   return `github:${login}`;
 }
 
-// Server-to-server calls (Vercel cron, the step self-call) carry no cookie. They may pass
-// middleware only on the exact internal paths and only with the exact CRON_SECRET bearer.
-// The route handlers still check the secret themselves.
+// Vercel cron calls carry no cookie. They pass middleware only under /api/cron/ and only
+// with the exact CRON_SECRET bearer. The route handlers still check the secret themselves.
 export function isCronAuthorized(
   pathname: string,
   authorization: string | null | undefined,
   env: AuthEnv,
 ): boolean {
-  const internal = pathname === '/api/cron' || pathname.startsWith('/api/cron/') || /^\/api\/runs\/[^/]+\/step$/.test(pathname);
-  if (!internal || !env.CRON_SECRET || !authorization) return false;
+  if (!pathname.startsWith('/api/cron/') || !env.CRON_SECRET || !authorization) return false;
   const expected = enc.encode(`Bearer ${env.CRON_SECRET}`);
   const actual = enc.encode(authorization);
   if (expected.length !== actual.length) return false;

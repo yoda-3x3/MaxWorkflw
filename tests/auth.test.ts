@@ -154,21 +154,43 @@ test('isPublicPath: only /login and /api/auth/* are public', () => {
   assert.equal(isPublicPath('/api/cron/kick'), false);
 });
 
-test('cron: only the exact CRON_SECRET bearer passes, and only on internal paths', () => {
+test('cron: /api/cron/* is accepted with the exact CRON_SECRET bearer', () => {
   const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
   const good = `Bearer ${cronEnv.CRON_SECRET}`;
   assert.equal(isCronAuthorized('/api/cron/kick', good, cronEnv), true);
-  assert.equal(isCronAuthorized('/api/runs/abc123/step', good, cronEnv), true);
+});
 
+test('cron: the run step path is no longer a cron path', () => {
+  const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
+  const good = `Bearer ${cronEnv.CRON_SECRET}`;
+  assert.equal(isCronAuthorized('/api/runs/abc123/step', good, cronEnv), false);
+  assert.equal(isCronAuthorized('/api/runs/abc123', good, cronEnv), false);
+  assert.equal(isCronAuthorized('/api/runs/abc123/approvals/x', good, cronEnv), false);
+  assert.equal(isCronAuthorized('/', good, cronEnv), false);
+});
+
+test('cron: wrong, near-miss, malformed or missing bearer is rejected', () => {
+  const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
+  const good = `Bearer ${cronEnv.CRON_SECRET}`;
   assert.equal(isCronAuthorized('/api/cron/kick', good.slice(0, -1) + 'Q', cronEnv), false);
   assert.equal(isCronAuthorized('/api/cron/kick', good + ' ', cronEnv), false);
   assert.equal(isCronAuthorized('/api/cron/kick', 'bearer ' + cronEnv.CRON_SECRET, cronEnv), false);
+  assert.equal(isCronAuthorized('/api/cron/kick', cronEnv.CRON_SECRET, cronEnv), false);
+  assert.equal(isCronAuthorized('/api/cron/kick', '', cronEnv), false);
+  assert.equal(isCronAuthorized('/api/cron/kick', 'Bearer ', cronEnv), false);
   assert.equal(isCronAuthorized('/api/cron/kick', undefined, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', good, {}), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', 'Bearer ', { CRON_SECRET: '' }), false);
+});
 
-  assert.equal(isCronAuthorized('/api/runs/abc123', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/runs/abc123/approvals/x', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/runs/a/b/step', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/', good, cronEnv), false);
+test('cron: an unset or empty CRON_SECRET rejects everything', () => {
+  assert.equal(isCronAuthorized('/api/cron/kick', 'Bearer ', { CRON_SECRET: '' }), false);
+  assert.equal(isCronAuthorized('/api/cron/kick', 'Bearer undefined', {}), false);
+  assert.equal(isCronAuthorized('/api/cron/kick', '', {}), false);
+});
+
+test('cron: lookalike paths /api/cron and /api/cronx are rejected', () => {
+  const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
+  const good = `Bearer ${cronEnv.CRON_SECRET}`;
+  assert.equal(isCronAuthorized('/api/cron', good, cronEnv), false);
+  assert.equal(isCronAuthorized('/api/cronx', good, cronEnv), false);
+  assert.equal(isCronAuthorized('/api/cronx/kick', good, cronEnv), false);
 });
