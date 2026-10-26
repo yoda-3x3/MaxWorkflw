@@ -1,14 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  DEFAULT_SYMBOLS,
-  parseStooqCsv,
-  parseYahooChart,
-  yahooUrl,
-  parseSymbols,
-  stooqSymbol,
-  stooqUrl,
-} from "../app/api/ticker/parse";
+import { DEFAULT_SYMBOLS, parseYahooChart, yahooUrl, parseSymbols } from "../app/api/ticker/parse";
 
 test("parseSymbols falls back to defaults when unset or empty", () => {
   assert.deepEqual(parseSymbols(undefined), DEFAULT_SYMBOLS);

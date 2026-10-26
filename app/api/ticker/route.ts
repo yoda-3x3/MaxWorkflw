@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { parseSymbols, type Quote } from "./parse";
 import { fetchQuotes } from "./quotes";
 
-// Keyless quotes from Yahoo Finance (Stooq as a last resort), fetched server-side so the
-// browser never talks to the upstream hosts. Failures never produce an error response:
-// the last good quote per symbol is returned, or an empty list, and the UI hides the bar.
+// Keyless quotes from Yahoo Finance's chart endpoint, fetched server-side so the browser
+// never talks to the upstream host. Failures never produce an error response: the last good
+// quote per symbol is returned, or an empty list, and the UI hides the bar (quotes quietly
+// unavailable). Edge caching is short: s-maxage=60 keeps upstream requests to ~1 batch/min.
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

@@ -69,32 +69,32 @@ test("fetchQuote falls back when query1 returns an unknown-symbol body", async (
   assert.equal((await fetchQuote("ZZZ", impl))?.price, 3);
 });
 
-test("fetchQuote falls back to Stooq CSV as the last source", async () => {
-  const csv = "Symbol,Date,Time,Open,High,Low,Close,Volume,Prev\nAAPL.US,2026-10-23,22:00:10,1,1,1,255,1,250";
+test("fetchQuote makes at most two requests and never touches a non-Yahoo host", async () => {
   const { impl, calls } = stubFetch({
     "yahoo.com": { status: 500 },
-    "stooq.com": { body: csv },
-  });
-  const q = await fetchQuote("AAPL", impl);
-  assert.deepEqual(q, { symbol: "AAPL", price: 255, change: 5, changePct: 2 });
-  assert.equal(calls.length, 3);
-  assert.match(calls[2].url, /^https:\/\/stooq\.com\/q\/l\//);
-});
-
-test("fetchQuote returns null when every source fails, without throwing", async () => {
-  const { impl, calls } = stubFetch({
-    "yahoo.com": "throw",
-    "stooq.com": { body: "<html>The page you requested does not exist</html>" },
   });
   assert.equal(await fetchQuote("NOPE", impl), null);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((c) => /^https:\/\/query[12]\.finance\.yahoo\.com\//.test(c.url)));
+});
+
+test("fetchQuote returns null when every host fails, without throwing", async () => {
+  const { impl, calls } = stubFetch({
+    "yahoo.com": "throw",
+  });
+  assert.equal(await fetchQuote("NOPE", impl), null);
+  assert.equal(calls.length, 2);
+});
+
+test("fetchQuote returns null for an unparseable body instead of throwing", async () => {
+  const { impl } = stubFetch({ "yahoo.com": { body: "<html>Too Many Requests</html>" } });
+  assert.equal(await fetchQuote("AAPL", impl), null);
 });
 
 test("fetchQuotes runs every symbol and keeps null for failed ones", async () => {
   const { impl } = stubFetch({
     "query1.finance.yahoo.com": { body: yahoo(1, 1) },
     "query2.finance.yahoo.com": { body: yahoo(1, 1) },
-    "stooq.com": { body: "" },
   });
   const results = await fetchQuotes(["A", "B"], impl);
   assert.equal(results.length, 2);
