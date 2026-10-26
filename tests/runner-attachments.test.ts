@@ -1,9 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import {
   attachmentNote,
-  CHUNK_BYTES,
+  isFinishedStatus,
+  prepareRunAttachments,
+  resolveWorkDir,
   materializeAttachments,
   uniqueName,
   type AttachmentSource,
@@ -16,6 +18,8 @@ import {
   sanitizeFileName,
   uploadsDirFor,
 } from '../scripts/lib/attachments'
+
+const CHUNK = 512 * 1024
 
 test('sanitizeFileName keeps the base name and replaces unsafe characters', () => {
   assert.equal(sanitizeFileName('report.pdf'), 'report.pdf')
@@ -79,7 +83,7 @@ test('attachmentNote lists paths for the prompt and is empty with no files', () 
 
 // Fake store: serves chunks from an in-memory map and records every call.
 function fakeSource(files: Record<string, Buffer>, opts: { dropChunk?: string } = {}) {
-  const metas = Object.keys(files).map((id) => ({ id, name: id, size: files[id].length }))
+  const metas = Object.keys(files).map((id) => ({ id, name: id, size: files[id].length, chunkBytes: CHUNK }))
   const reads: number[][] = []
   const deleted: string[] = []
   const source: AttachmentSource = {
@@ -88,7 +92,7 @@ function fakeSource(files: Record<string, Buffer>, opts: { dropChunk?: string } 
       reads.push(indexes)
       // Each chunk is its own base64 of a raw slice, as the site stores it.
       const raw = files[fileId]
-      return indexes.map((n) => (fileId === opts.dropChunk && n === 0 ? null : raw.subarray(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES).toString('base64')))
+      return indexes.map((n) => (fileId === opts.dropChunk && n === 0 ? null : raw.subarray(n * CHUNK, (n + 1) * CHUNK).toString('base64')))
     },
     async deleteRunFile(_runId, fileId) { deleted.push(fileId) },
   }
@@ -115,7 +119,7 @@ test('uniqueName suffixes duplicates and keeps the extension', () => {
 })
 
 test('materializeAttachments reassembles files, batches reads, then deletes the chunks', async () => {
-  const big = Buffer.alloc(CHUNK_BYTES * 2 + 100, 7)
+  const big = Buffer.alloc(CHUNK * 2 + 100, 7)
   const small = Buffer.from('small file')
   const { source, reads, deleted } = fakeSource({ big, small })
   const { deps, written } = fakeDeps(source)
@@ -129,7 +133,7 @@ test('materializeAttachments reassembles files, batches reads, then deletes the 
 })
 
 test('materializeAttachments refuses a missing chunk and keeps chunks for a retry', async () => {
-  const { source, deleted } = fakeSource({ f: Buffer.alloc(CHUNK_BYTES + 5, 1) }, { dropChunk: 'f' })
+  const { source, deleted } = fakeSource({ f: Buffer.alloc(CHUNK + 5, 1) }, { dropChunk: 'f' })
   const { deps } = fakeDeps(source)
   await assert.rejects(materializeAttachments('run-1', runDirFor('C:/work', 'run-1'), deps), /chunk 0 of attachment f is missing/)
   assert.deepEqual(deleted, [])
@@ -138,7 +142,7 @@ test('materializeAttachments refuses a missing chunk and keeps chunks for a retr
 test('materializeAttachments refuses a total over the limit before reading anything', async () => {
   const reads: number[][] = []
   const source: AttachmentSource = {
-    async listRunFiles() { return [{ id: 'a', name: 'a', size: MAX_ATTACHMENT_BYTES }, { id: 'b', name: 'b', size: 1 }] },
+    async listRunFiles() { return [{ id: 'a', name: 'a', size: MAX_ATTACHMENT_BYTES, chunkBytes: CHUNK }, { id: 'b', name: 'b', size: 1, chunkBytes: CHUNK }] },
     async readFileChunks(_r, _f, indexes) { reads.push(indexes); return [] },
     async deleteRunFile() {},
   }
@@ -149,7 +153,7 @@ test('materializeAttachments refuses a total over the limit before reading anyth
 
 test('materializeAttachments keeps two files with the same name', async () => {
   const { source } = fakeSource({ x: Buffer.from('1') })
-  const same = { ...source, async listRunFiles() { return [{ id: 'x', name: 'a.txt', size: 1 }, { id: 'x2', name: 'a.txt', size: 1 }] }, async readFileChunks(_r: string, f: string) { return [Buffer.from(f === 'x' ? '1' : '2').toString('base64')] } }
+  const same = { ...source, async listRunFiles() { return [{ id: 'x', name: 'a.txt', size: 1, chunkBytes: CHUNK }, { id: 'x2', name: 'a.txt', size: 1, chunkBytes: CHUNK }] }, async readFileChunks(_r: string, f: string) { return [Buffer.from(f === 'x' ? '1' : '2').toString('base64')] } }
   const { deps, written } = fakeDeps(same)
   const paths = await materializeAttachments('run-1', runDirFor('C:/work', 'run-1'), deps)
   assert.equal(new Set(paths).size, 2)
@@ -161,4 +165,49 @@ test('assembleBase64 decodes padded middle chunks correctly', () => {
   const b = Buffer.from([5, 6])
   const out = assembleBase64([a.toString('base64'), b.toString('base64')], 6)
   assert.deepEqual(out, Buffer.from([1, 2, 3, 4, 5, 6]))
+})
+
+// Fake disk: a map of path to bytes, with readdir over its keys.
+function fakeFs(disk: Map<string, Buffer>) {
+  return {
+    async mkdir() {},
+    async writeFile(path: string, data: Buffer) { disk.set(path, data) },
+    async readdir(dir: string) {
+      return [...disk.keys()].filter((k) => dirname(k) === dir).map((k) => basename(k))
+    },
+  }
+}
+
+test('prepareRunAttachments writes the files, deletes chunks, and lists the uploads', async () => {
+  const { source, deleted } = fakeSource({ doc: Buffer.from('hello doc') })
+  const disk = new Map<string, Buffer>()
+  const prepared = await prepareRunAttachments('run-1', 'C:/work', source, fakeFs(disk))
+  assert.equal(prepared.paths.length, 1)
+  assert.equal(disk.get(prepared.paths[0])?.toString(), 'hello doc')
+  assert.deepEqual(deleted, ['doc'])
+})
+
+test('prepareRunAttachments on a retry finds files from an earlier claim even when no chunks remain', async () => {
+  const disk = new Map<string, Buffer>()
+  const source: AttachmentSource = {
+    async listRunFiles() { return [] },
+    async readFileChunks() { return [] },
+    async deleteRunFile() {},
+  }
+  const earlier = attachmentPath(runDirFor('C:/work', 'run-1'), 'kept.txt')
+  disk.set(earlier, Buffer.from('from before'))
+  const prepared = await prepareRunAttachments('run-1', 'C:/work', source, fakeFs(disk))
+  assert.deepEqual(prepared.paths, [earlier])
+})
+
+test('resolveWorkDir prefers RUNNER_WORK_DIR, then LOCALAPPDATA, then the home folder', () => {
+  assert.equal(resolveWorkDir({ RUNNER_WORK_DIR: 'D:/runs' }, 'C:/home'), resolve('D:/runs'))
+  assert.equal(resolveWorkDir({ LOCALAPPDATA: 'C:/Users/x/AppData/Local' }, 'C:/home'), join('C:/Users/x/AppData/Local', 'workflwpro', 'runs'))
+  assert.equal(resolveWorkDir({}, 'C:/home'), join('C:/home', 'workflwpro', 'runs'))
+})
+
+test('isFinishedStatus is true only for done and failed', () => {
+  assert.equal(isFinishedStatus('done'), true)
+  assert.equal(isFinishedStatus('failed'), true)
+  for (const s of ['draft', 'queued', 'planning', 'running']) assert.equal(isFinishedStatus(s), false, s)
 })

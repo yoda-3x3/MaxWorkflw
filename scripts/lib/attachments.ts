@@ -72,7 +72,7 @@ export interface AttachmentMeta {
 export interface AttachmentSource {
   listRunFiles(runId: string): Promise<AttachmentMeta[]>
   readFileChunks(runId: string, fileId: string, indexes: number[]): Promise<(string | null)[]>
-  deleteRunFile(runId: string, fileId: string): Promise<void>
+  deleteRunFile(runId: string, fileId: string): Promise<unknown>
 }
 
 export interface MaterializeDeps {

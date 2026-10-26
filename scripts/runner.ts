@@ -2,6 +2,7 @@
 // with the Claude Agent SDK (subscription billing), and keeps a heartbeat so the site can show it is up.
 // Start with `npm run runner`. Install as a logon task with scripts/install-runner-task.ps1.
 import { readFileSync } from 'node:fs'
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +12,13 @@ import { createGitHubClient } from '../lib/github'
 import { resolveModels } from '../lib/llm'
 import { getRunStore } from '../lib/store'
 import { createSdkLlm } from './lib/sdk-llm'
+import {
+  isFinishedStatus,
+  prepareRunAttachments,
+  resolveWorkDir,
+  type AttachmentFs,
+  type PreparedAttachments,
+} from './lib/attachments'
 import { ENV_FILES, mergeEnv, missingEnv, parseEnvText, stripApiKey, validRunId, REQUIRED_ENV } from './lib/env'
 import { execGit, parseRepo, prepareWorkspace, type Workspace } from './lib/git'
 import { readGhToken } from './lib/gh'
@@ -80,6 +88,16 @@ function loadEnv(): void {
   delete process.env.ANTHROPIC_API_KEY
 }
 
+// Node filesystem for the attachment step. A missing uploads folder is an empty listing, not an error.
+const nodeFs: AttachmentFs = {
+  mkdir: async (dir) => { await mkdir(dir, { recursive: true }) },
+  writeFile: (path, data) => writeFile(path, data),
+  readdir: (dir) => readdir(dir).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return []
+    throw err
+  }),
+}
+
 async function processRun(runId: string, c: UpstashClient, models: ReturnType<typeof resolveModels>): Promise<void> {
   const store = getRunStore()
   const run = await store.getRunForEngine(runId)
@@ -99,6 +117,7 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
   refresh.unref?.()
 
   let workspace: Workspace | undefined
+  let attachments: PreparedAttachments | undefined
   try {
     const token = run.repo ? await readGhToken() : undefined
     if (token) secrets.push(token)
@@ -107,10 +126,18 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
       log(`workspace ready: ${run.repo} on ${workspace.branch}`)
     }
 
+    // Attachments: download what is not on disk yet, then tell the agent where they are.
+    attachments = await prepareRunAttachments(runId, resolveWorkDir(process.env), store, nodeFs)
+    if (attachments.paths.length > 0) log(`${attachments.paths.length} attachment(s) ready for run ${runId}`)
+
     const result = await runLoop({
       step: async () => {
         const r = await step(runId, {
-          llm: createSdkLlm({ env: process.env }),
+          llm: createSdkLlm({
+            env: process.env,
+            attachmentPaths: attachments?.paths ?? [],
+            attachmentsDir: attachments?.uploadsDir,
+          }),
           store,
           github: (repo: string) => {
             const { owner, name } = parseRepo(repo)
@@ -152,6 +179,11 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
     clearInterval(refresh)
     await batcher.close()
     await workspace?.cleanup().catch(() => {})
+    // Files stay on disk until the run is finished, so a later claim still finds them.
+    if (attachments) {
+      const latest = await store.getRunForEngine(runId).catch(() => null)
+      if (latest && isFinishedStatus(latest.status)) await rm(attachments.runDir, { recursive: true, force: true }).catch(() => {})
+    }
   }
 }
 
