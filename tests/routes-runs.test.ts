@@ -22,7 +22,7 @@ const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   // getRunStore() caches one in-memory store on globalThis. Drop it so each test starts empty.
-  delete (globalThis as Record<string, unknown>).__maxworkflwRunStore;
+  delete (globalThis as Record<string, unknown>).__workflwproRunStore;
   saved = {
     SESSION_SECRET: process.env.SESSION_SECRET,
     ALLOWED_USERS: process.env.ALLOWED_USERS,

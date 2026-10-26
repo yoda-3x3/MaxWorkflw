@@ -1,4 +1,4 @@
-// Shared contract for MaxWorkflw. Every unit (auth, store, engine, UI, ...) imports from here.
+// Shared contract for WorkflwPro. Every unit (auth, store, engine, UI, ...) imports from here.
 // Keep this file types-and-constants only; no I/O.
 
 // ---- Limits (enforced in the engine, not just the prompt) ----

@@ -33,7 +33,7 @@ export interface ClaudeCliOptions {
 }
 
 // Everything the agent's subprocess may inherit. Secrets the agent must not see
-// (GH_REPO_TOKEN, UPSTASH_*, GITHUB_TOKEN, SESSION_SECRET, CRON_SECRET, ANTHROPIC_API_KEY)
+// (GH_REPO_TOKEN, UPSTASH_*, GITHUB_TOKEN, SESSION_SECRET, ANTHROPIC_API_KEY)
 // are absent on purpose. Add a key here only if the CLI cannot work without it.
 export const ENV_ALLOWLIST = [
   'PATH',

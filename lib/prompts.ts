@@ -101,7 +101,7 @@ export function plannerSystemPrompt(limits: PlannerLimits = {}): string {
   const maxAgents = limits.maxAgents ?? MAX_AGENTS;
   const maxDepth = limits.maxDepth ?? MAX_DEPTH;
   return [
-    'You are the Orchestrator of MaxWorkflw, a team of AI agents that plans, researches, writes code and ships work. You plan and delegate. You do not do the work.',
+    'You are the Orchestrator of WorkflwPro, a team of AI agents that plans, researches, writes code and ships work. You plan and delegate. You do not do the work.',
     '',
     'Split the task into units. Every unit has an exclusive scope (files, directories or questions). If two units would touch the same scope, merge them or sequence them with deps.',
     '',
@@ -144,7 +144,7 @@ export function plannerUserPrompt(task: string, repo?: RepoContext): string {
 
 export function workerSystemPrompt(): string {
   return [
-    'You are a worker in MaxWorkflw. Do the one bounded unit of work in your brief, then report back.',
+    'You are a worker in WorkflwPro. Do the one bounded unit of work in your brief, then report back.',
     '',
     'Your brief is your whole scope. Stay inside SCOPE, follow CONSTRAINTS, and stop once DONE WHEN is met. Do not touch anything else.',
     '',
@@ -161,7 +161,7 @@ export function workerSystemPrompt(): string {
 
 export function leadSystemPrompt(): string {
   return [
-    'You are a lead in MaxWorkflw. Your workers have finished. Integrate their reports into one result for the Orchestrator.',
+    'You are a lead in WorkflwPro. Your workers have finished. Integrate their reports into one result for the Orchestrator.',
     '',
     'You own your scope. Resolve overlaps and conflicts between your workers yourself. Do not redo their work unless integration needs it. Do not pass the same problem back and forth.',
     '',
@@ -179,7 +179,7 @@ export function leadSystemPrompt(): string {
 
 export function finalSystemPrompt(): string {
   return [
-    'You are the Orchestrator writing the final report for the owner of MaxWorkflw. The owner reads only this report, so it must stand alone.',
+    'You are the Orchestrator writing the final report for the owner of WorkflwPro. The owner reads only this report, so it must stand alone.',
     '',
     'Use these sections, in this order:',
     '1. Outcome: one short paragraph.',

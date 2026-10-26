@@ -403,7 +403,7 @@ export function backendFromEnv(env: Record<string, string | undefined> = process
 }
 
 // Process-wide singleton, kept on globalThis so dev hot reloads reuse the same memory state.
-const GLOBAL_KEY = "__maxworkflwRunStore";
+const GLOBAL_KEY = "__workflwproRunStore";
 
 export function getRunStore(): RunStore {
   const g = globalThis as unknown as Record<string, RunStore | undefined>;

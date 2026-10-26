@@ -20,9 +20,9 @@ import { AGENT_STALL_MS, RUN_DEADLINE_MS, type ApprovalDecision, type Run } from
 
 const models = { orchestrator: 'opus-test', lead: 'sonnet-test', worker: 'haiku-test' }
 
-const isPlanner = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator of MaxWorkflw')
+const isPlanner = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator of WorkflwPro')
 const isFinal = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator writing the final report')
-const isLead = (c: MockCall) => c.kind === 'work' && (c.req.system ?? '').startsWith('You are a lead in MaxWorkflw')
+const isLead = (c: MockCall) => c.kind === 'work' && (c.req.system ?? '').startsWith('You are a lead in WorkflwPro')
 const promptOf = (c: MockCall) => c.req.prompt
 const planReply = (units: unknown[]) => ({ text: JSON.stringify({ summary: 'plan summary', units }) })
 const approvalFor = (rule: 1 | 2 | 3 | 4, request: string) => ({ text: '', approval: { rule, request } })

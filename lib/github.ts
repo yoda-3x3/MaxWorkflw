@@ -1,4 +1,4 @@
-// GitHub access for MaxWorkflw runs.
+// GitHub access for WorkflwPro runs.
 //
 // Every operation is scoped to the branch `workflwpro/<runId>`. The branch is
 // created on demand from the repo's default branch. There is no delete and no
