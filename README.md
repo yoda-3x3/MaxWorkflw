@@ -158,6 +158,13 @@ HandCam loads the MediaPipe WASM and gesture model from a CDN when you turn it o
 - Repo mode works only on its own branch, `workflwpro/<runId>`. It never merges, deletes, or force-pushes. You press Merge yourself.
 - Writes block path traversal, `.git/`, and `.env*` files.
 
+### File uploads
+
+- A run can take attachments of up to about **90 MB** in total. That cap is set by the free Worker and Upstash setup. A 20 GB limit is not possible on the free plan.
+- Files are sent through the site in chunks, because one request cannot carry that much.
+- The PC runner downloads the attachments into its work folder for the run.
+- Attachments are deleted from Upstash after the runner downloads them, and in any case after 24 hours.
+
 ## Free-tier notes
 
 - **Workers Free:** 100,000 requests per day and a 10 ms CPU limit per request. The Worker only serves pages and API calls, so this is rarely hit.
