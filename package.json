@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "description": "Web dashboard for running a 3-tier agent team (Orchestrator -> Lead -> Worker) from any browser.",
   "scripts": {
-    "test": "tsx --test \"tests/**/*.test.ts\" \"components/**/*.test.ts\" \"lib/**/*.test.ts\" \"app/**/*.test.ts\"",
+    "test": "tsx --test \"tests/**/*.test.ts\" \"components/**/*.test.ts\" \"lib/**/*.test.ts\" \"app/**/*.test.ts\" \"worker/**/*.test.ts\"",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cf:build": "opennextjs-cloudflare build",
+    "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy"
   },
   "private": true,
   "type": "module",
@@ -21,10 +24,12 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "^1.20.13",
     "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.153.0"
   }
 }
