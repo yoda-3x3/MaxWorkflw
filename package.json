@@ -11,7 +11,8 @@
     "cf:build": "opennextjs-cloudflare build",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "runner": "tsx scripts/runner.ts"
+    "runner": "tsx scripts/runner.ts",
+    "deploy:pages": "cd pages-proxy && wrangler pages deploy --project-name workflwpro --branch main"
   },
   "private": true,
   "type": "module",

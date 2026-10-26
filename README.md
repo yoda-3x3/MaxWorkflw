@@ -48,8 +48,8 @@ WorkflwPro is built for one owner. It uses your own Claude subscription through 
 ### 2. GitHub OAuth app and token
 
 1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.
-2. Homepage URL: `https://workflwpro.flitetest-bhs.workers.dev`
-3. Authorization callback URL: `https://workflwpro.flitetest-bhs.workers.dev/api/auth/github/callback`. The callback is built from `APP_ORIGIN`, so the two must match exactly.
+2. Homepage URL: `https://workflwpro.pages.dev`
+3. Authorization callback URL: `https://workflwpro.pages.dev/api/auth/github/callback`. The callback is built from `APP_ORIGIN`, so the two must match exactly.
 4. Copy the client ID and generate a client secret. You will set both in step 4.
 5. Create a fine-grained personal access token for the Merge button. Give it contents and pull requests read and write on the repos you use with repo mode, and nothing else. You will set it as `GITHUB_TOKEN` in step 4.
 
@@ -59,7 +59,7 @@ Non-secret settings live under `vars` in `wrangler.jsonc`:
 
 ```jsonc
 "vars": {
-  "APP_ORIGIN": "https://workflwpro.flitetest-bhs.workers.dev",
+  "APP_ORIGIN": "https://workflwpro.pages.dev",
   "ALLOWED_USERS": "your-github-login",
   "TICKER_SYMBOLS": "AAPL,MSFT,NVDA"
 }
@@ -96,7 +96,10 @@ npm install
 npm run cf:build        # OpenNext build into .open-next/
 npm run preview         # build and run locally on workerd
 npm run deploy          # build, then deploy to Cloudflare
+npm run deploy:pages    # the workflwpro.pages.dev front door
 ```
+
+The app runs in the `workflwpro` Worker. `https://workflwpro.pages.dev` is a Cloudflare Pages project (`pages-proxy/`) that forwards every request to that Worker through a service binding, so deploy the Worker first. `deploy:pages` only needs re-running if `pages-proxy/` changes.
 
 For local preview, copy the Worker block from `.env.example` to `.dev.vars` (git-ignored) and fill it in. Then open `APP_ORIGIN`, sign in with GitHub, and start a run once the runner is up (step 6).
 

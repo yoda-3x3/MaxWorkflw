@@ -12,7 +12,7 @@
     { "binding": "WORKER_SELF_REFERENCE", "service": "workflwpro" }
   ],
   "vars": {
-    "APP_ORIGIN": "https://workflwpro.flitetest-bhs.workers.dev",
+    "APP_ORIGIN": "https://workflwpro.pages.dev",
     "ALLOWED_USERS": "yoda-3x3",
     "TICKER_SYMBOLS": "AAPL,TSLA,PLTR,GLD"
   }

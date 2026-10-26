@@ -1,0 +1,10 @@
+{
+  // Cloudflare Pages project "workflwpro" (https://workflwpro.pages.dev). It only forwards every
+  // request to the "workflwpro" Worker, which runs the app; deploy the Worker first.
+  // Deploy: npm run deploy:pages
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "workflwpro",
+  "pages_build_output_dir": "./public",
+  "compatibility_date": "2025-09-01",
+  "services": [{ "binding": "APP", "service": "workflwpro" }]
+}
