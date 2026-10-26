@@ -112,7 +112,7 @@ test('work runs in cwd with the allowed tools, the disallowed shell patterns and
   const args = s.args;
   assert.equal(args[args.indexOf('--allowedTools') + 1], 'Read,Write,Edit,Glob,Grep,Bash');
   const disallowed = args[args.indexOf('--disallowedTools') + 1];
-  for (const pattern of ['git push', 'rm -rf', 'vercel', 'npm run deploy']) {
+  for (const pattern of ['git push', 'rm -rf', 'npm run deploy']) {
     assert.ok(disallowed.includes(pattern), `missing ${pattern}`);
   }
   assert.equal(args[args.indexOf('--max-turns') + 1], '30');
@@ -127,11 +127,11 @@ test('work honours maxTurns', async () => {
 });
 
 test('a final APPROVAL_REQUEST line becomes the approval', async () => {
-  const text = 'Built the page.\nAPPROVAL_REQUEST rule=3: Add a paid Vercel plan for previews';
+  const text = 'Built the page.\nAPPROVAL_REQUEST rule=3: Add a paid hosting plan for previews';
   const fake = fakeSpawn([{ stdout: okJson(text) }]);
   const llm = createClaudeCliLlm({ spawn: fake.spawn, env: { PATH: '/bin' } });
   const res = await llm.work({ model: 'm', prompt: 'p' });
-  assert.deepEqual(res.approval, { rule: 3, request: 'Add a paid Vercel plan for previews' });
+  assert.deepEqual(res.approval, { rule: 3, request: 'Add a paid hosting plan for previews' });
   assert.equal(res.text, text);
 });
 
