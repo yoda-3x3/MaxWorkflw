@@ -17,7 +17,10 @@ export async function GET(req: Request) {
   return json({ runs, runner: { online: runner.online } });
 }
 
-/** Starts a run. Only signed-in users on ALLOWED_USERS get here (getCaller checks the allowlist). */
+/**
+ * Creates a draft run. Attachments can be uploaded while it is a draft; POST /api/runs/:id/start
+ * queues it. Only signed-in users on ALLOWED_USERS get here (getCaller checks the allowlist).
+ */
 export async function POST(req: Request) {
   const caller = await getCaller(req);
   if (!caller) return json({ error: "unauthorized" }, 401);
@@ -37,8 +40,7 @@ export async function POST(req: Request) {
     repo = body.repo;
   }
 
-  const run = buildRun({ ownerId: caller.id, task, repo });
-  // One Upstash call: the run record, its history and active index, and the runner queue.
-  await getRunStore().saveRun(run, { queue: true });
+  const run = buildRun({ ownerId: caller.id, task, repo, draft: true });
+  await getRunStore().saveRun(run);
   return json(run, 201);
 }

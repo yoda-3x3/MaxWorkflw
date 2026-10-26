@@ -40,7 +40,8 @@ export type ModelId = string;
 // ---- Statuses ----
 
 export type RunStatus =
-  | "queued" // created, plan not started yet
+  | "draft" // created, attachments may still be uploading; not queued
+  | "queued" // started, waiting for the runner, plan not started yet
   | "planning" // orchestrator is producing the plan
   | "running" // units/workers are executing
   | "waiting_approval" // nothing else can run; at least one approval is pending
@@ -205,6 +206,23 @@ export interface RunnerStatus {
   host?: string;
   startedAt?: number;
   lastSeen?: number;
+}
+
+/** An attachment uploaded for a draft run. Chunks are stored separately; see store.ts. */
+export interface RunFile {
+  id: string;
+  runId: string;
+  /** Basename only. No path separators. */
+  name: string;
+  /** Total raw bytes. */
+  size: number;
+  /** Raw bytes per chunk (UPLOAD_CHUNK_BYTES). */
+  chunkBytes: number;
+  /** ceil(size / chunkBytes). */
+  chunks: number;
+  /** True once every chunk is stored and the owner called complete. */
+  complete: boolean;
+  createdAt: number;
 }
 
 /** Lightweight entry for run history lists (kept in a per-owner index). */
