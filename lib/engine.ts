@@ -94,7 +94,7 @@ export async function createRun(
   return run
 }
 
-export function buildRun(args: { ownerId: string; task: string; repo?: string; now?: number; id?: string }): Run {
+export function buildRun(args: { ownerId: string; task: string; repo?: string; now?: number; id?: string; draft?: boolean }): Run {
   const now = args.now ?? Date.now()
   const id = args.id ?? crypto.randomUUID()
   return {
@@ -102,7 +102,7 @@ export function buildRun(args: { ownerId: string; task: string; repo?: string; n
     ownerId: args.ownerId,
     task: args.task,
     repo: args.repo,
-    status: 'queued',
+    status: args.draft ? 'draft' : 'queued',
     tokens: 0,
     agents: [
       {
