@@ -24,6 +24,7 @@ runner.env
 # logs
 logs/
 *.log
+.*-out.txt
 
 # attachments shared with the team (never committed)
 .wdash/attachments/
