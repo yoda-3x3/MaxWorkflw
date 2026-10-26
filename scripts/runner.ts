@@ -128,7 +128,8 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
           models,
           now: () => Date.now(),
         })
-        batcher.push({ ts: Date.now(), runId, action: r.action, more: r.more })
+        // Same shape as lib/types.ts RunEvent, so the site can show it as-is.
+        batcher.push({ at: Date.now(), message: r.action })
         return r
       },
       budgetMs: Number.POSITIVE_INFINITY,
