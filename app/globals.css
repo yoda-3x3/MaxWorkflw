@@ -97,6 +97,15 @@ h2 {
   margin: 0.4rem 0;
 }
 
+/* Shown when the PC runner has not sent a heartbeat. Full width, above the toolbar. */
+.runner-offline {
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem;
+}
+
 /* ---- Layout: sidebar + main; sidebar becomes a drawer on narrow screens ---- */
 
 .shell {

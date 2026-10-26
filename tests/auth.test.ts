@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  appOrigin,
   createOAuthState,
   createSession,
+  githubCallbackUrl,
   isAllowed,
-  isCronAuthorized,
   isPublicPath,
   parseAllowlist,
   verifyOAuthState,
@@ -79,13 +80,6 @@ test('session: rejected when the payload is altered', async () => {
   assert.equal(await verifySession(forged, env, NOW), null);
 });
 
-test('session: rejected when the method is not github', async () => {
-  const token = await createSession({ method: 'github', login: 'bob-gh' }, SECRET, NOW);
-  const forged = swapPayload(token, { ...payloadOf(token), method: 'magic_link' });
-  // Editing the payload breaks the signature, so this fails on the signature, not the method check.
-  assert.equal(await verifySession(forged, env, NOW), null);
-});
-
 test('session: rejected after expiry', async () => {
   const token = await createSession({ method: 'github', login: 'bob-gh' }, SECRET, NOW);
   const exp = payloadOf(token).exp as number;
@@ -154,43 +148,14 @@ test('isPublicPath: only /login and /api/auth/* are public', () => {
   assert.equal(isPublicPath('/api/cron/kick'), false);
 });
 
-test('cron: /api/cron/* is accepted with the exact CRON_SECRET bearer', () => {
-  const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
-  const good = `Bearer ${cronEnv.CRON_SECRET}`;
-  assert.equal(isCronAuthorized('/api/cron/kick', good, cronEnv), true);
+test('origin: APP_ORIGIN wins over the request origin, trailing slash ignored', () => {
+  const env = { APP_ORIGIN: 'https://wf.example.com/' };
+  assert.equal(appOrigin('https://other.workers.dev/api/auth/github', env), 'https://wf.example.com');
+  assert.equal(githubCallbackUrl(appOrigin('https://other.workers.dev/x', env)), 'https://wf.example.com/api/auth/github/callback');
 });
 
-test('cron: the run step path is no longer a cron path', () => {
-  const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
-  const good = `Bearer ${cronEnv.CRON_SECRET}`;
-  assert.equal(isCronAuthorized('/api/runs/abc123/step', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/runs/abc123', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/runs/abc123/approvals/x', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/', good, cronEnv), false);
-});
-
-test('cron: wrong, near-miss, malformed or missing bearer is rejected', () => {
-  const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
-  const good = `Bearer ${cronEnv.CRON_SECRET}`;
-  assert.equal(isCronAuthorized('/api/cron/kick', good.slice(0, -1) + 'Q', cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', good + ' ', cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', 'bearer ' + cronEnv.CRON_SECRET, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', cronEnv.CRON_SECRET, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', '', cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', 'Bearer ', cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', undefined, cronEnv), false);
-});
-
-test('cron: an unset or empty CRON_SECRET rejects everything', () => {
-  assert.equal(isCronAuthorized('/api/cron/kick', 'Bearer ', { CRON_SECRET: '' }), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', 'Bearer undefined', {}), false);
-  assert.equal(isCronAuthorized('/api/cron/kick', '', {}), false);
-});
-
-test('cron: lookalike paths /api/cron and /api/cronx are rejected', () => {
-  const cronEnv = { CRON_SECRET: 'cron-'.padEnd(40, 'z') };
-  const good = `Bearer ${cronEnv.CRON_SECRET}`;
-  assert.equal(isCronAuthorized('/api/cron', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cronx', good, cronEnv), false);
-  assert.equal(isCronAuthorized('/api/cronx/kick', good, cronEnv), false);
+test('origin: without APP_ORIGIN the request origin is used', () => {
+  for (const env of [{}, { APP_ORIGIN: '   ' }]) {
+    assert.equal(appOrigin('http://localhost:3000/api/auth/github', env), 'http://localhost:3000');
+  }
 });

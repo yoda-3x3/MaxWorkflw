@@ -3,8 +3,10 @@ import {
   OAUTH_STATE_COOKIE,
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
+  appOrigin,
   cookieOptions,
   createSession,
+  githubCallbackUrl,
   isAllowed,
   nowSeconds,
   verifyOAuthState,
@@ -31,7 +33,7 @@ async function fetchGitHubLogin(code: string, redirectUri: string): Promise<stri
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'maxworkflw',
+      'User-Agent': 'WorkflwPro',
     },
     signal: AbortSignal.timeout(10_000),
   });
@@ -43,9 +45,10 @@ async function fetchGitHubLogin(code: string, redirectUri: string): Promise<stri
 export async function GET(req: NextRequest) {
   const env = process.env;
   const url = req.nextUrl;
+  const origin = appOrigin(req.url, env);
 
   const fail = (error: string) => {
-    const res = NextResponse.redirect(new URL(`/login?error=${error}`, req.url));
+    const res = NextResponse.redirect(new URL(`/login?error=${error}`, origin));
     res.cookies.delete(OAUTH_STATE_COOKIE);
     return res;
   };
@@ -58,12 +61,12 @@ export async function GET(req: NextRequest) {
   const code = url.searchParams.get('code');
   if (!stateOk || !code) return fail('state');
 
-  const login = await fetchGitHubLogin(code, new URL('/api/auth/github/callback', req.url).toString());
+  const login = await fetchGitHubLogin(code, githubCallbackUrl(origin));
   if (!login) return fail('github');
   if (!isAllowed({ login }, env.ALLOWED_USERS)) return fail('denied');
 
   const session = await createSession({ method: 'github', login }, env.SESSION_SECRET, nowSeconds());
-  const res = NextResponse.redirect(new URL('/', req.url));
+  const res = NextResponse.redirect(new URL('/', origin));
   res.cookies.delete(OAUTH_STATE_COOKIE);
   res.cookies.set(SESSION_COOKIE, session, cookieOptions(SESSION_TTL_SECONDS));
   return res;

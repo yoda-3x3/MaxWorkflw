@@ -19,6 +19,7 @@ export interface AuthEnv {
   SESSION_SECRET?: string;
   ALLOWED_USERS?: string;
   CRON_SECRET?: string;
+  APP_ORIGIN?: string;
 }
 
 interface Signed {
@@ -137,20 +138,16 @@ function ownerId(login: string): string {
   return `github:${login}`;
 }
 
-// Vercel cron calls carry no cookie. They pass middleware only under /api/cron/ and only
-// with the exact CRON_SECRET bearer. The route handlers still check the secret themselves.
-export function isCronAuthorized(
-  pathname: string,
-  authorization: string | null | undefined,
-  env: AuthEnv,
-): boolean {
-  if (!pathname.startsWith('/api/cron/') || !env.CRON_SECRET || !authorization) return false;
-  const expected = enc.encode(`Bearer ${env.CRON_SECRET}`);
-  const actual = enc.encode(authorization);
-  if (expected.length !== actual.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) diff |= expected[i] ^ actual[i];
-  return diff === 0;
+// Public origin for OAuth redirects. APP_ORIGIN wins, so the callback URL is fixed in
+// production. Without it we fall back to the origin of the incoming request.
+export function appOrigin(requestUrl: string, env: AuthEnv): string {
+  const configured = env.APP_ORIGIN?.trim().replace(/\/+$/, '');
+  if (configured) return new URL(configured).origin;
+  return new URL(requestUrl).origin;
+}
+
+export function githubCallbackUrl(origin: string): string {
+  return `${origin}/api/auth/github/callback`;
 }
 
 export async function createSession(

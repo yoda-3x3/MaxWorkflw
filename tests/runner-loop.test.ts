@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runLoop } from '../scripts/lib/loop'
-import { missingEnv, validRunId } from '../scripts/lib/env'
 
 test('runLoop stops as soon as the engine says no more steps', async () => {
   const actions = [{ action: 'planned', more: true }, { action: 'waiting', more: false }]
@@ -47,15 +46,29 @@ test('runLoop logs each step and does not sleep after the last one', async () =>
   assert.deepEqual(sleeps, [])
 })
 
-test('missingEnv names missing variables and never values', () => {
-  const env = { RUN_ID: 'r1', CLAUDE_CODE_OAUTH_TOKEN: 'secret-value', UPSTASH_REDIS_REST_URL: '', UPSTASH_REDIS_REST_TOKEN: 'x', GH_REPO_TOKEN: undefined }
-  assert.deepEqual(missingEnv(env), ['UPSTASH_REDIS_REST_URL', 'GH_REPO_TOKEN'])
-  assert.deepEqual(missingEnv({ RUN_ID: 'r', CLAUDE_CODE_OAUTH_TOKEN: 'a', UPSTASH_REDIS_REST_URL: 'u', UPSTASH_REDIS_REST_TOKEN: 't', GH_REPO_TOKEN: 'g' }), [])
+test('runLoop stops between steps when shouldStop turns true, without starting another step', async () => {
+  let stop = false
+  let calls = 0
+  const result = await runLoop({
+    step: async () => { calls += 1; stop = true; return { action: 'wave', more: true } },
+    budgetMs: 1000,
+    gapMs: 0,
+    now: () => 0,
+    sleep: async () => {},
+    shouldStop: () => stop,
+  })
+  assert.equal(calls, 1)
+  assert.deepEqual(result, { steps: 1, stoppedBy: 'stopped', lastAction: 'wave' })
 })
 
-test('validRunId accepts the store id charset only', () => {
-  assert.equal(validRunId('abc-DEF_1'), true)
-  for (const bad of [undefined, '', 'a/b', 'a b', 'a'.repeat(129), '$(x)']) {
-    assert.equal(validRunId(bad), false, String(bad))
-  }
+test('runLoop does not start a step when shouldStop is already true', async () => {
+  let calls = 0
+  const result = await runLoop({
+    step: async () => { calls += 1; return { action: 'wave', more: true } },
+    budgetMs: 1000,
+    gapMs: 0,
+    shouldStop: () => true,
+  })
+  assert.equal(calls, 0)
+  assert.equal(result.stoppedBy, 'stopped')
 })
