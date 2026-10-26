@@ -161,7 +161,7 @@ export interface Run {
   plan?: Plan;
   /** Set when the Orchestrator writes the final report. */
   finalReport?: string;
-  /** Repo mode only: branch `maxworkflw/<runId>` and its PR. */
+  /** Repo mode only: branch `workflwpro/<runId>` and its PR. */
   branch?: string;
   prUrl?: string;
   prNumber?: number;
@@ -177,6 +177,25 @@ export interface Run {
   updatedAt: number;
   /** createdAt + RUN_DEADLINE_MS. */
   deadlineAt: number;
+}
+
+/** Written by the PC runner every ~15s to `runner:heartbeat` (expires after 45s). */
+export interface RunnerHeartbeat {
+  runnerId: string;
+  pid: number;
+  host: string;
+  startedAt: number;
+  /** Epoch ms when this beat was written. */
+  ts: number;
+}
+
+/** What the site reports about the runner. `online` is false when the heartbeat key has expired. */
+export interface RunnerStatus {
+  online: boolean;
+  runnerId?: string;
+  host?: string;
+  startedAt?: number;
+  lastSeen?: number;
 }
 
 /** Lightweight entry for run history lists (kept in a per-owner index). */
