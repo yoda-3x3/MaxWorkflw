@@ -34,7 +34,7 @@ test("formatTokens compacts large counts", () => {
 });
 
 test("agentCountLabel shows the cap", () => {
-  assert.equal(agentCountLabel(4), "4/15");
+  assert.equal(agentCountLabel(4), "4/30");
 });
 
 test("deadlineProgress is clamped to [0, 1]", () => {
