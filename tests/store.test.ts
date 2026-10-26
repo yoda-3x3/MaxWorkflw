@@ -377,3 +377,55 @@ test("backendFromEnv uses Upstash when both env vars are set", async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test("draft runs stay out of active:runs until saved as queued", async () => {
+  const store = createRunStore(createMemoryBackend());
+  await store.saveRun(makeRun({ id: "d1", ownerId: "alice", status: "draft", updatedAt: 1 }));
+  assert.deepEqual(await store.listActiveRunIds(), []);
+  await store.saveRun(makeRun({ id: "d1", ownerId: "alice", status: "queued", updatedAt: 2 }));
+  assert.deepEqual(await store.listActiveRunIds(), ["d1"]);
+});
+
+test("readFileChunks pages its reads and keeps order and gaps", async () => {
+  const kv = createMemoryBackend();
+  const calls: number[] = [];
+  const counting = {
+    async pipeline(cmds: (string | number)[][]) {
+      calls.push(cmds[0][0] === "MGET" ? cmds[0].length - 1 : 0);
+      return kv.pipeline(cmds);
+    },
+  };
+  const store = createRunStore(counting);
+  for (let n = 0; n < 20; n++) {
+    if (n === 5) continue;
+    await store.putFileChunk("r1", "f1", n, `c${n}`);
+  }
+  calls.length = 0;
+  const indexes = Array.from({ length: 20 }, (_, n) => n);
+  const got = await store.readFileChunks("r1", "f1", indexes);
+
+  assert.equal(got.length, 20);
+  assert.equal(got[0], "c0");
+  assert.equal(got[5], null);
+  assert.equal(got[19], "c19");
+  assert.deepEqual(calls, [8, 8, 4], "one MGET per page of 8 chunks");
+});
+
+test("a file's chunks and metadata are deleted together", async () => {
+  const store = createRunStore(createMemoryBackend());
+  await store.createRunFile({
+    id: "f1", runId: "r1", name: "a", size: 4, chunkBytes: 524288, chunks: 1, complete: false, createdAt: 1,
+  });
+  await store.putFileChunk("r1", "f1", 0, "AAAA");
+  assert.equal(await store.completeRunFile("r1", "f1"), 0);
+  assert.equal((await store.listRunFiles("r1"))[0].complete, true);
+  assert.equal(await store.deleteRunFile("r1", "f1"), true);
+  assert.deepEqual(await store.listRunFiles("r1", { all: true }), []);
+  assert.equal(await store.readFileChunk("r1", "f1", 0), null);
+  assert.equal(await store.deleteRunFile("r1", "f1"), false);
+});
+
+test("file ids are validated before touching storage", async () => {
+  const store = createRunStore(createMemoryBackend());
+  await assert.rejects(store.readFileChunk("r1", "../x", 0), /invalid file id/);
+});

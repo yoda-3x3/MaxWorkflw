@@ -4,6 +4,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { APPROVAL_LINE, DISALLOWED_BASH, ENV_ALLOWLIST, WORK_TOOLS } from '../../lib/claude-cli'
 import type { Approval, CompleteRequest, CompleteResult, Llm, Usage, WorkRequest, WorkResult } from '../../lib/llm'
+import { attachmentNote } from './attachments'
 
 // The slice of an SDK message this file reads. Kept loose so one SDK version bump is one edit here.
 export interface AgentMessage {
@@ -60,6 +61,9 @@ export interface SdkLlmOptions {
   env: Record<string, string | undefined>
   timeoutMs?: number
   queryFn?: QueryFn
+  /** Run attachments on this PC. Their paths go into the agent's system prompt, and the folder gets read access. */
+  attachmentsDir?: string
+  attachmentPaths?: string[]
 }
 
 export function createSdkLlm(opts: SdkLlmOptions): Llm {
@@ -98,12 +102,16 @@ export function createSdkLlm(opts: SdkLlmOptions): Llm {
     },
 
     async work(req: WorkRequest): Promise<WorkResult> {
+      const note = attachmentNote(opts.attachmentPaths ?? [])
+      const system = [req.system, note].filter((s) => s && s.length > 0).join('\n\n')
       const outcome = await collect(req.prompt, {
         model: req.model,
-        systemPrompt: req.system,
+        systemPrompt: system,
         cwd: req.cwd,
         allowedTools: [...WORK_TOOLS],
         disallowedTools: [...DISALLOWED_BASH],
+        // Read access to the attachment folder, nothing else outside the clone.
+        additionalDirectories: opts.attachmentsDir ? [opts.attachmentsDir] : [],
         maxTurns: req.maxTurns,
         settingSources: [],
       })

@@ -151,14 +151,16 @@ test('over-budget plan is truncated to the agent cap and the cut is logged', asy
     deps: [],
     workers: Array.from({ length: 6 }, (_, i) => ({ id: `${id}-${i}`, title: `${id}${i}`, brief: 'w', deps: [] })),
   })
-  const env = setup((c) => (isPlanner(c) ? planReply([big('a'), big('b'), big('c')]) : { text: 'x' }))
+  // Each big unit is 7 agents (lead + 6 workers). Four fit in the 29 planned slots (28 agents),
+  // so the fifth is cut.
+  const env = setup((c) => (isPlanner(c) ? planReply(['a', 'b', 'c', 'd', 'e'].map(big)) : { text: 'x' }))
   const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
   assert.equal((await step(run.id, env.deps)).action, 'planned')
 
   const after = await env.current(run.id)
-  assert.equal(after.agents.length, 15, 'orchestrator + 14 planned agents, never more')
-  assert.ok(after.events.some((e) => e.message === 'cut by agent limit: unit c'))
-  assert.ok(!after.plan!.units.some((u) => u.id === 'c'))
+  assert.equal(after.agents.length, 29, 'orchestrator + 28 planned agents, never more')
+  assert.ok(after.events.some((e) => e.message === 'cut by agent limit: unit e'))
+  assert.ok(!after.plan!.units.some((u) => u.id === 'e'))
 })
 
 test('planner reply that fails validation is retried once, then the run proceeds', async () => {

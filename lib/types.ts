@@ -4,7 +4,7 @@
 // ---- Limits (enforced in the engine, not just the prompt) ----
 
 /** Max agents per run, counted across all tiers including the Orchestrator. */
-export const MAX_AGENTS = 15;
+export const MAX_AGENTS = 30;
 
 /** Max tiers: Orchestrator (1) -> Lead (2) -> Worker (3). */
 export const MAX_DEPTH = 3;
@@ -17,6 +17,15 @@ export const AGENT_STALL_MS = 5 * 60 * 1000;
 
 /** Each agent gets this many attempts in total (one retry) before it is marked failed. */
 export const AGENT_MAX_ATTEMPTS = 2;
+
+/** Largest single attachment. */
+export const MAX_UPLOAD_BYTES = 90 * 1024 * 1024;
+/** Largest total of attachments on one run. */
+export const MAX_RUN_UPLOAD_BYTES = 90 * 1024 * 1024;
+/** Max attachments per run. */
+export const MAX_FILES_PER_RUN = 20;
+/** Every chunk except the last is exactly this many raw bytes. One chunk is one request. */
+export const UPLOAD_CHUNK_BYTES = 512 * 1024;
 
 // ---- Tiers, roles, models ----
 
@@ -31,7 +40,8 @@ export type ModelId = string;
 // ---- Statuses ----
 
 export type RunStatus =
-  | "queued" // created, plan not started yet
+  | "draft" // created, attachments may still be uploading; not queued
+  | "queued" // started, waiting for the runner, plan not started yet
   | "planning" // orchestrator is producing the plan
   | "running" // units/workers are executing
   | "waiting_approval" // nothing else can run; at least one approval is pending
@@ -196,6 +206,23 @@ export interface RunnerStatus {
   host?: string;
   startedAt?: number;
   lastSeen?: number;
+}
+
+/** An attachment uploaded for a draft run. Chunks are stored separately; see store.ts. */
+export interface RunFile {
+  id: string;
+  runId: string;
+  /** Basename only. No path separators. */
+  name: string;
+  /** Total raw bytes. */
+  size: number;
+  /** Raw bytes per chunk (UPLOAD_CHUNK_BYTES). */
+  chunkBytes: number;
+  /** ceil(size / chunkBytes). */
+  chunks: number;
+  /** True once every chunk is stored and the owner called complete. */
+  complete: boolean;
+  createdAt: number;
 }
 
 /** Lightweight entry for run history lists (kept in a per-owner index). */

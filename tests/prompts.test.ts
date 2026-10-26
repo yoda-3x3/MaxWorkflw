@@ -111,7 +111,7 @@ test('worker and lead prompts describe repo-mode file work and never pushing', (
 
 test('the planner prompt states the agent cap, depth cap and JSON shape', () => {
   const text = plannerSystemPrompt();
-  assert.match(text, /at most 15 agents/);
+  assert.match(text, /at most 30 agents/);
   assert.match(text, /deeper than 3 tiers/);
   assert.match(text, /"units": \[\{"id"/);
   assert.match(text, /Output ONLY one JSON object/);
@@ -271,7 +271,7 @@ test('capPlan cuts a unit whose dependency was cut, and keeps the rest', () => {
 });
 
 test('capPlan leaves a plan under the cap untouched', () => {
-  const { plan, cut } = capPlan(validPlan as Plan, 15);
+  const { plan, cut } = capPlan(validPlan as Plan, 30);
   assert.deepEqual(cut, []);
   assert.equal(plan.units.length, 3);
 });
