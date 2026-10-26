@@ -151,12 +151,19 @@ HandCam loads the MediaPipe WASM and gesture model from a CDN when you turn it o
 
 ### Limits (enforced in code)
 
-- At most **15 agents** per run, counted across all tiers. Plans over the cap are truncated and the cut is logged.
+- At most **30 agents** per run, counted across all tiers. Plans over the cap are truncated and the cut is logged.
 - At most **3 tiers**: Orchestrator, Lead, Worker.
 - Each run has a **24-hour deadline**. A run past it fails with a clear message.
 - Each agent gets **one retry** (two attempts in total). After that it is marked failed, and the run continues and reports it.
 - Repo mode works only on its own branch, `workflwpro/<runId>`. It never merges, deletes, or force-pushes. You press Merge yourself.
 - Writes block path traversal, `.git/`, and `.env*` files.
+
+### File uploads
+
+- A run can take attachments of up to about **90 MB** in total. That cap is set by the free Worker and Upstash setup. A 20 GB limit is not possible on the free plan.
+- Files are sent through the site in chunks, because one request cannot carry that much.
+- The PC runner downloads the attachments into its work folder for the run.
+- Attachments are deleted from Upstash after the runner downloads them, and in any case after 24 hours.
 
 ## Free-tier notes
 
