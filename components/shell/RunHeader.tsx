@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { MAX_AGENTS, type Run } from "../../lib/types";
-import type { RunFileMeta } from "./api";
+import { MAX_AGENTS, type Run, type RunFile } from "../../lib/types";
 import { formatBytes } from "./attachments";
 import {
   agentCountLabel,
@@ -15,7 +14,7 @@ import {
 
 interface Props {
   run: Run;
-  files?: RunFileMeta[];
+  files?: RunFile[];
   now: number;
   onMerge: () => Promise<void>;
 }

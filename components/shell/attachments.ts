@@ -1,17 +1,7 @@
 // Pure helpers for files attached to a new run: size limit, chunk ranges, retry.
-// No DOM or network here, so they are unit-tested directly.
-
-/** Default per-run upload cap (90 MB). The server enforces the same limit. */
-export const DEFAULT_MAX_UPLOAD_BYTES = 90 * 1024 * 1024;
-
-/** Max files per run. Enforced by the server too. */
-export const MAX_FILES_PER_RUN = 20;
-
-/**
- * Fallback chunk size (512 KiB). The server returns its own `chunkBytes` when a file is
- * created, and that value wins. Every chunk except the last must be exactly this size.
- */
-export const UPLOAD_CHUNK_BYTES = 512 * 1024;
+// No DOM or network here, so they are unit-tested directly. Limits come from lib/types,
+// which the server enforces too.
+import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES } from "../../lib/types";
 
 export interface FileLike {
   name: string;
@@ -38,7 +28,7 @@ export function formatBytes(n: number): string {
  * Checks the total size of a file set against the cap. Empty files are rejected, and so is
  * a set whose combined size goes over `maxBytes`. The error names the limit and the total.
  */
-export function checkUploadSize(files: FileLike[], maxBytes = DEFAULT_MAX_UPLOAD_BYTES): SizeCheck {
+export function checkUploadSize(files: FileLike[], maxBytes = MAX_UPLOAD_BYTES): SizeCheck {
   if (files.length > MAX_FILES_PER_RUN) {
     return { ok: false, error: `A run takes at most ${MAX_FILES_PER_RUN} files. Remove some files.` };
   }

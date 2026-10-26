@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_BYTES,
   checkUploadSize,
   chunkRanges,
   formatBytes,
@@ -24,8 +24,8 @@ test("checkUploadSize rejects a set over the limit and names both sizes", () => 
   }
 });
 
-test("checkUploadSize defaults to the 90 MB cap", () => {
-  assert.equal(DEFAULT_MAX_UPLOAD_BYTES, 90 * MB);
+test("checkUploadSize defaults to the shared 90 MB cap", () => {
+  assert.equal(MAX_UPLOAD_BYTES, 90 * MB);
   assert.equal(checkUploadSize([{ name: "x", size: 90 * MB }]).ok, true);
   assert.equal(checkUploadSize([{ name: "x", size: 90 * MB + 1 }]).ok, false);
 });

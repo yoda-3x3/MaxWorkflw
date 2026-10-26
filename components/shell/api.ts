@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ApprovalDecision, Run, RunIndexEntry } from "../../lib/types";
+import type { ApprovalDecision, Run, RunFile, RunIndexEntry } from "../../lib/types";
 import { chunkRanges, withRetry } from "./attachments";
 
 export const POLL_MS = 3000;
@@ -36,27 +36,15 @@ export function createRun(input: { task: string; repo?: string }): Promise<Run> 
   return request("/api/runs", { method: "POST", body: JSON.stringify(input) });
 }
 
-/** Wire shape of an attached file (see RunFile in lib/types.ts once it lands). */
-export interface RunFileMeta {
-  id: string;
-  runId: string;
-  name: string;
-  size: number;
-  chunkBytes: number;
-  chunks: number;
-  complete: boolean;
-  createdAt: number;
-}
-
 export function startRun(runId: string): Promise<Run> {
   return request(`/api/runs/${encodeURIComponent(runId)}/start`, { method: "POST" });
 }
 
-export function listRunFiles(runId: string): Promise<{ files: RunFileMeta[] }> {
+export function listRunFiles(runId: string): Promise<{ files: RunFile[] }> {
   return request(`/api/runs/${encodeURIComponent(runId)}/files`);
 }
 
-function createRunFile(runId: string, input: { name: string; size: number }): Promise<RunFileMeta> {
+function createRunFile(runId: string, input: { name: string; size: number }): Promise<RunFile> {
   return request(`/api/runs/${encodeURIComponent(runId)}/files`, {
     method: "POST",
     body: JSON.stringify(input),
@@ -74,7 +62,7 @@ function uploadChunk(runId: string, fileId: string, n: number, bytes: Blob): Pro
   );
 }
 
-function completeRunFile(runId: string, fileId: string): Promise<RunFileMeta> {
+function completeRunFile(runId: string, fileId: string): Promise<RunFile> {
   return request(
     `/api/runs/${encodeURIComponent(runId)}/files/${encodeURIComponent(fileId)}/complete`,
     { method: "POST" },
@@ -96,7 +84,7 @@ export async function uploadRunFile(
   runId: string,
   file: File,
   onBytes: (bytes: number) => void,
-): Promise<RunFileMeta> {
+): Promise<RunFile> {
   const meta = await createRunFile(runId, { name: file.name, size: file.size });
   const ranges = chunkRanges(file.size, meta.chunkBytes);
   for (const range of ranges) {
