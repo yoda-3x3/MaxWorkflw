@@ -4,7 +4,7 @@
 // ---- Limits (enforced in the engine, not just the prompt) ----
 
 /** Max agents per run, counted across all tiers including the Orchestrator. */
-export const MAX_AGENTS = 15;
+export const MAX_AGENTS = 30;
 
 /** Max tiers: Orchestrator (1) -> Lead (2) -> Worker (3). */
 export const MAX_DEPTH = 3;
