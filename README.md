@@ -1,101 +1,151 @@
 # WorkflwPro
 
-WorkflwPro runs a small team of Claude Code agents from a web dashboard. You type a task, an Orchestrator (Opus) plans it, Leads (Sonnet) and Workers (Haiku) carry it out, and you watch the agents live from any browser. Closing the tab does not stop a run.
+WorkflwPro runs a small team of Claude Code agents from a web dashboard. You type a task, an Orchestrator (Opus) plans it, Leads (Sonnet) and Workers (Haiku) carry it out, and you watch the agents live from any browser. Closing the tab does not stop a run: the PC runner keeps working on it.
 
 WorkflwPro is built for one owner. It uses your own Claude subscription through a Claude Code OAuth token, not a per-call API key.
 
 - **Stack:** Next.js 15 (App Router), React 19, TypeScript, OpenNext, hosted on Cloudflare Workers.
 - **State and queue:** Upstash Redis over REST.
-- **Agent execution:** a scheduled task on your PC runs `scripts/runner.ts`, which drives Claude Code through the Claude Agent SDK.
+- **Agent execution:** a Windows scheduled task on your PC runs `scripts/runner.ts`, which drives Claude Code through the Claude Agent SDK.
 - **Sign-in:** GitHub OAuth only. Only accounts in `ALLOWED_USERS` get in.
 
 ## Architecture
 
 ```
  browser ──► Cloudflare Worker (OpenNext: Next.js + static assets)
-               │  reads/writes run state, locks, queue
+               │  reads/writes runs, agents, approvals, logs, locks
                ▼
           Upstash Redis  ◄──────────────────────────┐
-                                                    │ reads/writes run state
-        PC scheduled task: scripts/runner.ts        │
-               │  advances one run per tick         │
-               ├──► Claude Agent SDK (CLAUDE_CODE_OAUTH_TOKEN,
-               │     owner's subscription, no API key)
-               └──► git/gh on the PC (the PC's own GitHub credentials)
+                                                    │ claims runs, writes progress
+        PC: scheduled task → scripts/runner.ts ─────┘
+               │  heartbeat every 15 s (45 s TTL)
+               ├──► Claude Agent SDK  (CLAUDE_CODE_OAUTH_TOKEN, your subscription)
+               └──► gh / git on the PC  (repo mode only)
 ```
 
-1. **The Worker stores and serves.** The web app and API routes keep runs, agents, approvals, and logs in Upstash Redis. The Worker never runs model calls.
-2. **The PC runner does the work.** A Windows scheduled task starts `scripts/runner.ts`. It picks up active runs from Upstash, advances them until they have nothing to do right now or the time budget is spent, and writes state back.
-3. **Claude Code runs the agents.** Agent calls go through the Claude Agent SDK on the PC. The OAuth token bills the owner's Claude subscription. `ANTHROPIC_API_KEY` is ignored and removed if it is set.
+1. **The Worker stores and serves.** The web app and API routes keep runs, agents, approvals, and logs in Upstash Redis. The Worker never runs model calls and has no cron.
+2. **The PC runner does the work.** It polls Upstash for queued runs (every 15 s when idle, every 2 s when busy), claims one, and advances it until nothing is runnable right now. Then it releases the run and goes back to polling.
+3. **Claude Code runs the agents.** Model calls go through the Claude Agent SDK on the PC and bill your subscription. `ANTHROPIC_API_KEY` is ignored and removed if it is set.
+4. **The dashboard watches the heartbeat.** The runner writes a heartbeat key every 15 seconds. If it expires, the dashboard shows "PC runner offline."
+
+## Accounts you need
+
+| Account | Used for | Notes |
+|---|---|---|
+| Cloudflare | Hosts the Worker | Workers Free plan works. Run `npx wrangler login` once. |
+| Upstash | Run state, queue, locks, heartbeat | Free Redis database. The Worker and the runner both use it. |
+| GitHub | Sign-in (OAuth app) and the Merge button (token) | OAuth app for sign-in. A fine-grained token for Merge. |
+| Claude subscription | Agent model calls | Create the OAuth token with `claude setup-token`. No API key. |
 
 ## Setup
 
-### 1. Cloudflare Worker
+### 1. Upstash database
 
-Prerequisites: Node 20 or newer, a Cloudflare account, and `npx wrangler login` once.
+1. Create a free Redis database in the Upstash console.
+2. Copy its REST URL and REST token.
+3. Use the same values in two places: the Worker secrets (step 4) and the runner env file (step 6).
+
+### 2. GitHub OAuth app and token
+
+1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.
+2. Homepage URL: `https://workflwpro.flitetest-bhs.workers.dev`
+3. Authorization callback URL: `https://workflwpro.flitetest-bhs.workers.dev/api/auth/github/callback`. The callback is built from `APP_ORIGIN`, so the two must match exactly.
+4. Copy the client ID and generate a client secret. You will set both in step 4.
+5. Create a fine-grained personal access token for the Merge button. Give it contents and pull requests read and write on the repos you use with repo mode, and nothing else. You will set it as `GITHUB_TOKEN` in step 4.
+
+### 3. Worker vars (`wrangler.jsonc`)
+
+Non-secret settings live under `vars` in `wrangler.jsonc`:
+
+```jsonc
+"vars": {
+  "APP_ORIGIN": "https://workflwpro.flitetest-bhs.workers.dev",
+  "ALLOWED_USERS": "your-github-login",
+  "TICKER_SYMBOLS": "AAPL,MSFT,NVDA"
+}
+```
+
+| Var | Required | Purpose |
+|---|---|---|
+| `APP_ORIGIN` | yes | Public origin of the Worker. The OAuth callback is built from it. |
+| `ALLOWED_USERS` | yes | Comma-separated GitHub logins, case-insensitive. Empty denies everyone. |
+| `TICKER_SYMBOLS` | no | Comma-separated tickers for the ticker bar. Empty hides it. |
+| `ORCHESTRATOR_MODEL`, `LEAD_MODEL`, `WORKER_MODEL` | no | Model IDs. Defaults: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`. Only the runner calls models, so set overrides in the runner env file (step 6) for them to take effect. |
+
+Change a var, then run `npm run deploy`.
+
+### 4. Worker secrets (`wrangler secret put`)
+
+Run these from the repo root. Each command prompts for the value, so nothing is written to a file:
+
+```bash
+npx wrangler secret put SESSION_SECRET          # openssl rand -base64 32
+npx wrangler secret put GITHUB_CLIENT_ID        # step 2
+npx wrangler secret put GITHUB_CLIENT_SECRET    # step 2
+npx wrangler secret put GITHUB_TOKEN            # step 2, used by the Merge button
+npx wrangler secret put UPSTASH_REDIS_REST_URL  # step 1
+npx wrangler secret put UPSTASH_REDIS_REST_TOKEN
+```
+
+Secrets never go in `wrangler.jsonc` or git. `CLAUDE_CODE_OAUTH_TOKEN` is never a Worker secret. It stays on the PC.
+
+### 5. Build, preview, and deploy
 
 ```bash
 npm install
 npm run cf:build        # OpenNext build into .open-next/
-npm run preview         # build and run locally with workerd
-npm run deploy          # build, then deploy to workflwpro.flitetest-bhs.workers.dev
+npm run preview         # build and run locally on workerd
+npm run deploy          # build, then deploy to Cloudflare
 ```
 
-Non-secret settings live in `wrangler.jsonc` under `vars`: `APP_ORIGIN`, `ALLOWED_USERS`, `TICKER_SYMBOLS`. Change them there and redeploy.
+For local preview, copy the Worker block from `.env.example` to `.dev.vars` (git-ignored) and fill it in. Then open `APP_ORIGIN`, sign in with GitHub, and start a run once the runner is up (step 6).
 
-Secrets are never in `wrangler.jsonc`. Set each one once, then redeploy if you change it:
+### 6. PC runner env file (`runner.env`)
 
-```bash
-npx wrangler secret put SESSION_SECRET          # openssl rand -base64 32
-npx wrangler secret put GITHUB_CLIENT_ID
-npx wrangler secret put GITHUB_CLIENT_SECRET
-npx wrangler secret put UPSTASH_REDIS_REST_URL
-npx wrangler secret put UPSTASH_REDIS_REST_TOKEN
-```
+1. Install Claude Code, then create the token: `npm i -g @anthropic-ai/claude-code`, then `claude setup-token`. Copy the printed token.
+2. In the repo root, create `runner.env` (or `scripts/.env`). Both are git-ignored:
 
-```bash
-npx wrangler secret put GITHUB_TOKEN            # used by the merge route
-```
+   ```
+   CLAUDE_CODE_OAUTH_TOKEN=     # from claude setup-token
+   UPSTASH_REDIS_REST_URL=      # same database as the Worker
+   UPSTASH_REDIS_REST_TOKEN=
+   ```
 
-`.env.example` lists every name, with the Worker vars and secrets separated.
+   Model overrides (`ORCHESTRATOR_MODEL` and so on) go here too, if you want them. `scripts/.env` wins over `runner.env` for any key that appears in both. Real environment variables win over both files.
 
-For local development, copy `.env.example` to `.dev.vars` and fill it in. `.dev.vars` is git-ignored. `CLAUDE_CODE_OAUTH_TOKEN` is never a Worker secret.
+3. Repo mode uses the PC's own GitHub CLI login, so no GitHub token goes in the file. Run `gh auth login` once on the PC. Only runs with a repo need it.
+4. Run `npm install` in the repo once.
+5. Test the runner in the foreground: `npm run runner`. A line saying the runner is up means it is polling. Press Ctrl+C to stop it.
 
-### 2. PC runner (`runner.env`)
+The runner never logs secret values. If a required key is missing, it names the key and exits.
 
-The runner reads its env from `scripts/.env` or `runner.env` in the repo root. Both are git-ignored and must never be committed. Process env wins over both files. Copy the runner block from `.env.example`:
+### 7. Scheduled task (Windows)
 
-```
-CLAUDE_CODE_OAUTH_TOKEN=     # from `claude setup-token`
-UPSTASH_REDIS_REST_URL=      # same database as the Worker
-UPSTASH_REDIS_REST_TOKEN=
-```
-
-The runner uses the PC's own `git` and `gh` credentials to reach GitHub, so no GitHub token goes in this file.
-
-### 3. Scheduled task (Windows)
-
-`scripts/install-runner-task.ps1` registers the runner as a hidden Windows scheduled task named `WorkflwProRunner`. It starts at logon, restarts on failure, and runs `npx tsx scripts/runner.ts` in the repo. Run it from PowerShell in the repo root:
+`scripts/install-runner-task.ps1` registers the runner as a hidden Windows scheduled task named `WorkflwProRunner`. The task starts at logon, restarts on failure, and runs `npx tsx scripts/runner.ts` in the repo. Run it from PowerShell in the repo root:
 
 ```powershell
 .\scripts\install-runner-task.ps1               # install (or update) and start the task
 .\scripts\install-runner-task.ps1 -Start        # start it now
-.\scripts\install-runner-task.ps1 -Stop         # stop it (it restarts at next logon)
+.\scripts\install-runner-task.ps1 -Stop         # stop it now (it restarts at next logon)
 .\scripts\install-runner-task.ps1 -Uninstall    # stop and remove the task
 ```
 
-The task only runs while the PC is on and you are logged in. The install step warns if neither env file exists.
+Notes:
 
-### HandCam (MediaPipe)
+- The task runs only while the PC is on and you are logged in.
+- The install step warns if neither env file exists. Create one first (step 6).
+- The task points at this repo folder. If you move the repo, run `-Uninstall`, then reinstall from the new location.
 
-The gesture model and WASM are loaded from a CDN at runtime (`components/handcam/HandCamToggle.tsx`), not bundled into the Worker. That keeps the Worker bundle small. The browser needs internet access to the CDN when HandCam is turned on. No file goes in `public/`.
+### HandCam (optional gesture control)
+
+HandCam loads the MediaPipe WASM and gesture model from a CDN when you turn it on (`components/handcam/HandCamToggle.tsx`). Nothing is bundled into the Worker and nothing goes in `public/`. The browser needs internet access to the CDN when HandCam is on. Camera frames are processed in the browser and are not uploaded.
 
 ## How a run works
 
 1. Sign in with GitHub. Only allowlisted users get in.
 2. Submit a task, optionally with a GitHub repo. The Orchestrator returns a JSON plan: `{summary, units:[{id,title,brief,deps,workers?}]}`.
 3. Units with `workers` become a Lead with Haiku workers. Units without become a standalone Sonnet worker.
-4. Each runner tick advances the engine until it has nothing to do right now (planning, a wave of ready agents, or finalizing), then stops. The next tick picks up where it left off.
+4. The runner advances the run until nothing is runnable right now (planning, a wave of ready agents, or finalizing). It has no time budget. If the runner is stopped mid-run, the run is requeued for the next runner.
 5. Leads integrate their workers' reports. The Orchestrator writes a final report.
 6. Risky actions pause only the agent that asked and show an Approve/Deny card. Everything else keeps going.
 
@@ -104,24 +154,15 @@ The gesture model and WASM are loaded from a CDN at runtime (`components/handcam
 - At most **15 agents** per run, counted across all tiers. Plans over the cap are truncated and the cut is logged.
 - At most **3 tiers**: Orchestrator, Lead, Worker.
 - Each run has a **24-hour deadline**. A run past it fails with a clear message.
-- Each agent gets one retry. After that it is marked failed, and the run continues and reports it.
-- Repo mode writes only to its own branch, `workflwpro/<runId>`. It never merges, deletes, or force-pushes. You press Merge yourself.
+- Each agent gets **one retry** (two attempts in total). After that it is marked failed, and the run continues and reports it.
+- Repo mode works only on its own branch, `workflwpro/<runId>`. It never merges, deletes, or force-pushes. You press Merge yourself.
 - Writes block path traversal, `.git/`, and `.env*` files.
-
-## Accounts you need
-
-| Service | Why | Notes |
-|---|---|---|
-| Claude subscription | Model calls through Claude Code | Create the OAuth token with `claude setup-token`. No API key. |
-| Cloudflare | Hosts the Worker | Workers Free plan works. |
-| Upstash | Run state, locks, queue | Free tier is enough for one owner. Use REST URL and token. |
-| GitHub | Sign-in (OAuth app) | Callback URL: `https://workflwpro.flitetest-bhs.workers.dev/api/auth/github/callback`. |
 
 ## Free-tier notes
 
-- **Workers Free:** 100,000 requests per day and a 10 ms CPU limit per request. Model calls never run on the Worker, so this is rarely hit.
-- **Worker size:** the free plan caps a Worker at 3 MB compressed. Run `npx wrangler deploy --dry-run --outdir=.wrangler-dry` to see the size. The build keeps HandCam and other heavy code out of the bundle.
-- **Upstash free:** limited daily commands. The runner and UI poll only while a run is active.
+- **Workers Free:** 100,000 requests per day and a 10 ms CPU limit per request. The Worker only serves pages and API calls, so this is rarely hit.
+- **Worker size:** the Free plan caps a Worker at 3 MB compressed. HandCam's MediaPipe code loads from a CDN, which keeps the bundle small.
+- **Upstash free:** the dashboard polls every 3 seconds while it is open, and the runner polls while it is up. Close the tab when you are done.
 - **No cron.** Nothing on Cloudflare schedules work. The PC task is the only driver. If the PC is off, runs wait.
 
 ## Scripts
@@ -132,23 +173,52 @@ The gesture model and WASM are loaded from a CDN at runtime (`components/handcam
 | `npm run cf:build` | OpenNext build for Workers into `.open-next/` |
 | `npm run preview` | Build, then run locally on workerd |
 | `npm run deploy` | Build, then deploy to Cloudflare |
-| `npm run runner` | Run the PC runner once, in the foreground |
+| `npm run runner` | Run the PC runner in the foreground. Ctrl+C stops it. |
 | `npm test` | Unit tests |
-| `npm run typecheck` | TypeScript check |
+| `npm run typecheck` | `tsc --noEmit` |
 
 ## Layout
 
-- `app/`: Next.js pages and API routes (Worker-compatible, no `fs` or `child_process`)
-- `lib/`: engine, store, auth, LLM wiring. `lib/claude-cli.ts` is runner-only.
-- `scripts/runner.ts`: PC runner entry point. Advances one run per tick.
-- `scripts/install-runner-task.ps1`: installs the scheduled task
-- `wrangler.jsonc`: Worker config
+- `app/`: Next.js pages and API routes
+- `components/`: dashboard UI, gestures, HandCam, ticker
+- `lib/`: engine, store, auth, GitHub client, LLM wiring. `lib/claude-cli.ts` holds the agent env allowlist and Bash deny-list, which the runner uses.
+- `scripts/runner.ts`: PC runner entry point
+- `scripts/install-runner-task.ps1`: installs, starts, stops, or removes the scheduled task
+- `wrangler.jsonc`: Worker config and non-secret vars
 - `open-next.config.ts`: OpenNext adapter config
 - `middleware.ts`: session check on pages and API routes
+
+## Troubleshooting
+
+### "PC runner offline." banner
+
+The dashboard shows this when the runner's heartbeat has been missing for 45 seconds. Runs stay queued until the runner comes back.
+
+1. Is the task running? In PowerShell: `Get-ScheduledTask -TaskName WorkflwProRunner`. If it is not running, start it with `.\scripts\install-runner-task.ps1 -Start`.
+2. Run `npm run runner` in the repo to see errors live. A `missing required env` message names the keys to add to `runner.env`.
+3. Check the Upstash values. The runner needs the same database and token as the Worker. If it cannot reach Upstash, it cannot write the heartbeat, and the banner stays up.
+4. The task runs only while the PC is on and you are logged in. A sleeping or logged-out PC shows the banner.
+
+### Sign-in fails or says denied
+
+- Your GitHub login is not in `ALLOWED_USERS`. The match is case-insensitive, and an empty list denies everyone. Edit the var, then run `npm run deploy`.
+- GitHub reports a redirect URI mismatch. The callback URL in the OAuth app must equal `APP_ORIGIN` plus `/api/auth/github/callback`.
+
+### Repo-mode run fails with "no gh token for GitHub access"
+
+Run `gh auth login` on the PC. The runner reads the token for each run, so no restart is needed.
+
+### Merge fails with "GITHUB_TOKEN is not configured"
+
+The secret is missing. Set it with `npx wrangler secret put GITHUB_TOKEN`.
+
+### The Worker reports that Upstash variables are required
+
+Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` as Worker secrets (step 4).
 
 ## Security notes
 
 - **No API keys.** Agents bill through `CLAUDE_CODE_OAUTH_TOKEN`. The runner deletes `ANTHROPIC_API_KEY` if it is present.
-- **Secrets stay where they belong.** Worker secrets are set with `wrangler secret put`. `CLAUDE_CODE_OAUTH_TOKEN` lives only in `runner.env` on the PC.
-- **Agent environment is an allowlist.** The Claude child process gets only an allowlisted environment and `CLAUDE_CODE_OAUTH_TOKEN`. The runner redacts known secret values from logs.
-- The env allowlist and Bash deny-list reduce exposure. They do not make the PC runner a sandbox. Agents can run code on your PC through Claude Code, with your user's permissions. Keep the scheduled task on an account you trust.
+- **Secrets stay where they belong.** Worker secrets are set with `wrangler secret put`. `CLAUDE_CODE_OAUTH_TOKEN` lives only in the runner env file on the PC.
+- **The agent environment is an allowlist.** The agent process gets only a short list of variables (`PATH`, `HOME`, and similar) plus `CLAUDE_CODE_OAUTH_TOKEN`. The runner redacts known secret values from logs.
+- **The allowlist and Bash deny-list are not a sandbox.** Agents run code on your PC with your user's permissions. Keep the scheduled task on an account you trust, and review repo-mode work before you press Merge.

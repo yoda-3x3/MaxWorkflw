@@ -1,5 +1,5 @@
 import { defineCloudflareConfig } from "@opennextjs/cloudflare";
 
-// Defaults are fine: no R2 incremental cache or image optimization binding yet.
-// The app is stateless (run state lives in Upstash Redis), so no cache binding is needed.
+// No incremental cache, tag cache, or queue overrides on purpose: those need R2/D1/DO
+// bindings, which are not free-plan friendly. SSR works without them.
 export default defineCloudflareConfig({});
