@@ -35,6 +35,13 @@ test("checkUploadSize rejects an empty file by name", () => {
   assert.deepEqual(r, { ok: false, error: "notes.txt is empty." });
 });
 
+test("checkUploadSize rejects more than 20 files", () => {
+  const files = Array.from({ length: 21 }, (_, i) => ({ name: `f${i}`, size: 1 }));
+  const r = checkUploadSize(files);
+  assert.equal(r.ok, false);
+  assert.equal(checkUploadSize(files.slice(0, 20)).ok, true);
+});
+
 test("checkUploadSize accepts an empty file list", () => {
   assert.deepEqual(checkUploadSize([]), { ok: true, totalBytes: 0 });
 });
