@@ -104,8 +104,9 @@ export async function materializeAttachments(runId: string, runDir: string, deps
 
   for (const file of files) {
     checkDeclaredSize(file.size)
-    const path = attachmentPath(runDir, uniqueName(sanitizeFileName(file.name), used))
-    used.add(sanitizeFileName(file.name))
+    const name = uniqueName(sanitizeFileName(file.name), used)
+    used.add(name)
+    const path = attachmentPath(runDir, name)
     const count = Math.ceil(file.size / CHUNK_BYTES)
     const chunks: string[] = []
     for (let from = 0; from < count; from += READ_BATCH) {
