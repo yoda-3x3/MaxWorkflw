@@ -51,7 +51,7 @@ test('secret-looking paths are detected in every segment, not just the basename'
   for (const p of ['deploy/.env.production', 'keys/server.pem', 'sub/.git/config', '.ssh/config', 'a/.git-credentials', 'x/y/id_ed25519']) {
     assert.equal(isSecretLikePath(p), true, p)
   }
-  for (const p of ['.env.example', 'config/.env.sample', 'src/git/index.ts', 'github/workflows/run.yml']) {
+  for (const p of ['.env.example', 'config/.env.sample', 'src/git/index.ts', 'github/workflows/ci.yml']) {
     assert.equal(isSecretLikePath(p), false, p)
   }
 });
@@ -83,7 +83,7 @@ test('arg builders produce plain, non-forcing commands', () => {
   assert.deepEqual(buildCheckoutArgs('workflwpro/r1', 'origin/main'), ['checkout', '-B', 'workflwpro/r1', 'origin/main'])
   const commit = buildCommitArgs('msg here')
   assert.ok(commit.includes('user.name=WorkflwPro'))
-  assert.ok(commit.includes('user.email=noreply@workflwpro.vercel.app'))
+  assert.ok(commit.includes('user.email=workflwpro@users.noreply.github.com'))
   assert.equal(commit[commit.indexOf('-m') + 1], 'msg here')
   for (const args of [buildPushArgs(), commit]) {
     assert.ok(!args.some((a) => a === '--force' || a === '-f' || a.startsWith('--force') || a === '--delete'))

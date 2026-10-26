@@ -20,7 +20,7 @@ export interface ExecResult {
 export type Exec = (args: string[], opts: ExecOptions) => Promise<ExecResult>
 
 export const BRANCH_PREFIX = 'workflwpro/'
-export const COMMIT_AUTHOR = { name: 'WorkflwPro', email: 'noreply@workflwpro.vercel.app' }
+export const COMMIT_AUTHOR = { name: 'WorkflwPro', email: 'workflwpro@users.noreply.github.com' }
 
 // No leading "-" or "." on any part, so nothing can read as a git option.
 const REPO_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/

@@ -55,7 +55,6 @@ export const WORK_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'] as c
 export const DISALLOWED_BASH = [
   'Bash(git push:*)',
   'Bash(rm -rf:*)',
-  'Bash(vercel:*)',
   'Bash(npm run deploy:*)',
   'Bash(gh:*)',
 ];
