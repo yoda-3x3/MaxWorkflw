@@ -3,14 +3,27 @@ node_modules/
 
 # next.js build output
 .next/
+next-env.d.ts
+
+# cloudflare / opennext build output
+.open-next/
+.wrangler/
+.wrangler-dry/
 
 # env files: never commit secrets
 .env
 .env.*
 !.env.example
+.dev.vars
+scripts/.env
+runner.env
 
 # typescript
 *.tsbuildinfo
+
+# logs
+logs/
+*.log
 
 # attachments shared with the team (never committed)
 .wdash/attachments/
