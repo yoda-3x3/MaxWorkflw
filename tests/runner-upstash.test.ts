@@ -106,7 +106,7 @@ test('appendEvents with no lines makes no request', async () => {
 
 test('startHeartbeat writes immediately, refreshes on each tick, and clears the key on stop', async () => {
   const writes: unknown[][] = []
-  const client = createUpstashClient({ url: 'https://x', token: 't', fetch: async (url, init) => {
+  const client = createUpstashClient({ url: 'https://x', token: 't', fetch: async (_url, init) => {
     writes.push(JSON.parse(init.body))
     return { ok: true, status: 200, text: async () => '{"result":"OK"}' }
   } })

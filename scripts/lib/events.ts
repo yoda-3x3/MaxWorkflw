@@ -33,11 +33,12 @@ export function createEventBatcher(opts: EventBatcherOptions): EventBatcher {
 
   const flush = (): Promise<void> => {
     clearTimer()
-    // Writes run one at a time so the list keeps event order.
+    // The batch is taken now, so events pushed later go to the next batch. Writes still run one at
+    // a time, so the list keeps event order.
+    const batch = buffer
+    buffer = []
+    if (batch.length === 0) return inFlight
     inFlight = inFlight.then(async () => {
-      if (buffer.length === 0) return
-      const batch = buffer
-      buffer = []
       try {
         await opts.write(batch)
       } catch (err) {
