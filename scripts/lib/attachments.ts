@@ -53,6 +53,77 @@ export function assembleBase64(chunks: string[], expectedBytes: number): Buffer 
   return buf
 }
 
+// Chunk size on the site side. Chunk n is this size except the last one.
+export const CHUNK_BYTES = 512 * 1024
+// Chunks fetched per Upstash pipeline call, so one request never carries more than this.
+const READ_BATCH = 64
+
+export interface AttachmentMeta {
+  id: string
+  name: string
+  size: number
+}
+
+// Read side of the site's file store. Chunks come back base64, null when missing.
+export interface AttachmentSource {
+  listRunFiles(runId: string): Promise<AttachmentMeta[]>
+  readFileChunks(runId: string, fileId: string, indexes: number[]): Promise<(string | null)[]>
+  deleteRunFile(runId: string, fileId: string): Promise<void>
+}
+
+export interface MaterializeDeps {
+  source: AttachmentSource
+  mkdir(dir: string): Promise<void>
+  writeFile(path: string, data: Buffer): Promise<void>
+}
+
+// Pure: a name that is not already used in this run, so two files sharing a name both survive.
+export function uniqueName(name: string, used: Set<string>): string {
+  if (!used.has(name)) return name
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const ext = dot > 0 ? name.slice(dot) : ''
+  for (let i = 2; ; i++) {
+    const candidate = `${stem}-${i}${ext}`
+    if (!used.has(candidate)) return candidate
+  }
+}
+
+// Downloads, verifies and writes every attachment of a run, then deletes its chunks.
+// Chunks are deleted only after every file is written, so a failure can be retried within the 24 h TTL.
+export async function materializeAttachments(runId: string, runDir: string, deps: MaterializeDeps): Promise<string[]> {
+  const files = await deps.source.listRunFiles(runId)
+  if (files.length === 0) return []
+  const total = files.reduce((sum, f) => sum + f.size, 0)
+  if (total > MAX_ATTACHMENT_BYTES) throw new AttachmentError(`attachments total ${total} bytes, over the ${MAX_ATTACHMENT_BYTES} limit`)
+
+  const uploads = uploadsDirFor(runDir)
+  await deps.mkdir(uploads)
+  const used = new Set<string>()
+  const written: string[] = []
+
+  for (const file of files) {
+    checkDeclaredSize(file.size)
+    const path = attachmentPath(runDir, uniqueName(sanitizeFileName(file.name), used))
+    used.add(sanitizeFileName(file.name))
+    const count = Math.ceil(file.size / CHUNK_BYTES)
+    const chunks: string[] = []
+    for (let from = 0; from < count; from += READ_BATCH) {
+      const indexes = Array.from({ length: Math.min(READ_BATCH, count - from) }, (_, i) => from + i)
+      const got = await deps.source.readFileChunks(runId, file.id, indexes)
+      got.forEach((c, i) => {
+        if (c === null) throw new AttachmentError(`chunk ${indexes[i]} of attachment ${file.id} is missing`)
+      })
+      chunks.push(...(got as string[]))
+    }
+    await deps.writeFile(path, assembleBase64(chunks, file.size))
+    written.push(path)
+  }
+
+  for (const file of files) await deps.source.deleteRunFile(runId, file.id)
+  return written
+}
+
 // One line per file, for the agent's prompt context. Paths are absolute so the agent can open them directly.
 export function attachmentNote(paths: string[]): string {
   if (paths.length === 0) return ''
