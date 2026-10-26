@@ -80,7 +80,7 @@ export function RunHeader({ run, now, onMerge }: Props) {
 
       {active && (
         <p className="cloud-note">
-          Runs on GitHub Actions with your Claude subscription. Safe to close this tab.
+          Runs on your PC runner with your Claude subscription. Safe to close this tab.
         </p>
       )}
 
