@@ -7,6 +7,7 @@ import {
   createUpstashClient,
   popQueue,
   refreshClaim,
+  requeueRun,
   releaseClaim,
   RUNNER_KEYS,
   UpstashError,
@@ -158,4 +159,10 @@ test('createEventBatcher keeps lines after a failed write and retries them', asy
   fail = false
   await b.close()
   assert.deepEqual(written, [['{"n":1}']])
+})
+
+test('requeueRun pushes the run id back onto runner:queue', async () => {
+  const { fetch, calls } = fakeFetch([{ body: { result: 1 } }])
+  await requeueRun(createUpstashClient({ url: 'https://x', token: 't', fetch }), 'run-9')
+  assert.deepEqual(calls[0].args, ['RPUSH', 'runner:queue', 'run-9'])
 })

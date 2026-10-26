@@ -24,6 +24,7 @@ import {
   createUpstashClient,
   popQueue,
   refreshClaim,
+  requeueRun,
   releaseClaim,
   type UpstashClient,
 } from './lib/upstash'
@@ -138,6 +139,8 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
       shouldStop: () => stopping,
     })
     log(`run ${runId} stopped: ${result.stoppedBy}, steps ${result.steps}, last ${result.lastAction ?? 'none'}`)
+    // Shutdown stopped it with work left. Put it back so the next runner picks it up.
+    if (result.stoppedBy === 'stopped') await requeueRun(c, runId)
 
     if (workspace) {
       const { pushed } = await workspace.finish()
