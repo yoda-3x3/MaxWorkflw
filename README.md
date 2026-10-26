@@ -4,43 +4,96 @@ WorkflwPro runs a small team of Claude Code agents from a web dashboard. You typ
 
 WorkflwPro is built for one owner. It uses your own Claude subscription through a Claude Code OAuth token, not a per-call API key.
 
-- **Stack:** Next.js 15 (App Router), React 19, TypeScript, hosted on Vercel.
+- **Stack:** Next.js 15 (App Router), React 19, TypeScript, OpenNext, hosted on Cloudflare Workers.
 - **State and queue:** Upstash Redis over REST.
-- **Agent execution:** GitHub Actions (`.github/workflows/run.yml`) runs `scripts/runner.ts`, which drives `claude -p` (Claude Code).
+- **Agent execution:** a scheduled task on your PC runs `scripts/runner.ts`, which drives Claude Code through the Claude Agent SDK.
 - **Sign-in:** GitHub OAuth only. Only accounts in `ALLOWED_USERS` get in.
 
 ## Architecture
 
 ```
- browser ──► Vercel (Next.js)
+ browser ──► Cloudflare Worker (OpenNext: Next.js + static assets)
                │  reads/writes run state, locks, queue
-               ├──► Upstash Redis
-               │
-               │  workflow_dispatch (GITHUB_TOKEN, actions:write)
                ▼
-        GitHub Actions: .github/workflows/run.yml   input: run_id
-               │  npm ci, npm i -g @anthropic-ai/claude-code
-               ▼
-        scripts/runner.ts  ──► claude -p (Claude Code)
-               │                 auth: CLAUDE_CODE_OAUTH_TOKEN
-               │                 (owner's Claude subscription, no API key)
-               ▼
-        advances the run, writes state back to Upstash
+          Upstash Redis  ◄──────────────────────────┐
+                                                    │ reads/writes run state
+        PC scheduled task: scripts/runner.ts        │
+               │  advances one run per tick         │
+               ├──► Claude Agent SDK (CLAUDE_CODE_OAUTH_TOKEN,
+               │     owner's subscription, no API key)
+               └──► git/gh on the PC (the PC's own GitHub credentials)
 ```
 
-1. **Vercel stores and queues.** The web app and API routes keep runs, agents, approvals, and logs in Upstash Redis. To advance a run, Vercel dispatches `run.yml` through the GitHub `workflow_dispatch` API with the run id as input.
-2. **GitHub Actions does the work.** Each dispatch checks out this repo, installs dependencies, installs Claude Code, and runs `scripts/runner.ts` for that run id. The runner advances the run until it has nothing to do right now or its time budget is spent.
-3. **Claude Code runs the agents.** Agent calls go through `claude -p` on the runner. The OAuth token bills the owner's Claude subscription. `ANTHROPIC_API_KEY` is ignored and removed if it is set.
-4. **Vercel never runs model calls.** Vercel only stores state and dispatches jobs. Three things dispatch a run: opening it in the UI (when it has gone quiet for more than 90 seconds), an approval decision, and a daily cron. The cron re-dispatches runs idle for more than 3 minutes and skips runs that are waiting for approval.
+1. **The Worker stores and serves.** The web app and API routes keep runs, agents, approvals, and logs in Upstash Redis. The Worker never runs model calls.
+2. **The PC runner does the work.** A Windows scheduled task starts `scripts/runner.ts`. It picks up active runs from Upstash, advances them until they have nothing to do right now or the time budget is spent, and writes state back.
+3. **Claude Code runs the agents.** Agent calls go through the Claude Agent SDK on the PC. The OAuth token bills the owner's Claude subscription. `ANTHROPIC_API_KEY` is ignored and removed if it is set.
 
-Concurrency: the workflow uses one concurrency group per run id (`run-<id>`) with `cancel-in-progress: false`, so two dispatches for the same run queue instead of cancelling each other. The runner also takes a per-run lock in Redis.
+## Setup
+
+### 1. Cloudflare Worker
+
+Prerequisites: Node 20 or newer, a Cloudflare account, and `npx wrangler login` once.
+
+```bash
+npm install
+npm run cf:build        # OpenNext build into .open-next/
+npm run preview         # build and run locally with workerd
+npm run deploy          # build, then deploy to workflwpro.flitetest-bhs.workers.dev
+```
+
+Non-secret settings live in `wrangler.jsonc` under `vars`: `APP_ORIGIN`, `ALLOWED_USERS`, `TICKER_SYMBOLS`. Change them there and redeploy.
+
+Secrets are never in `wrangler.jsonc`. Set each one once, then redeploy if you change it:
+
+```bash
+npx wrangler secret put SESSION_SECRET          # openssl rand -base64 32
+npx wrangler secret put GITHUB_CLIENT_ID
+npx wrangler secret put GITHUB_CLIENT_SECRET
+npx wrangler secret put UPSTASH_REDIS_REST_URL
+npx wrangler secret put UPSTASH_REDIS_REST_TOKEN
+```
+
+`GITHUB_TOKEN` is only needed if the site code calls the GitHub API. Check `.env.example` for the current list. The list is provisional until the backend and auth work is merged.
+
+For local development, copy `.env.example` to `.dev.vars` and fill it in. `.dev.vars` is git-ignored. `CLAUDE_CODE_OAUTH_TOKEN` is never a Worker secret.
+
+### 2. PC runner (`runner.env`)
+
+The runner reads its own env file from the repo root: `runner.env`. It is git-ignored and must never be committed. Copy the runner block from `.env.example`:
+
+```
+CLAUDE_CODE_OAUTH_TOKEN=     # from `claude setup-token`
+UPSTASH_REDIS_REST_URL=      # same database as the Worker
+UPSTASH_REDIS_REST_TOKEN=
+```
+
+The runner uses the PC's own `git` and `gh` credentials to reach GitHub, so no GitHub token goes in this file.
+
+### 3. Scheduled task (Windows)
+
+`scripts/install-runner-task.ps1` registers the runner as a Windows scheduled task. Run it from PowerShell in the repo root:
+
+```powershell
+.\scripts\install-runner-task.ps1 -Install     # register the task
+.\scripts\install-runner-task.ps1 -Start       # start it now
+.\scripts\install-runner-task.ps1 -Stop        # stop it
+.\scripts\install-runner-task.ps1 -Uninstall   # remove the task
+```
+
+Check the script's own help for the exact parameter names and the schedule it installs. The task only runs while the PC is on and logged in.
+
+> Verify the switches against `scripts/install-runner-task.ps1` once the runner work is merged. The names above are what that script is planned to expose.
+
+### HandCam (MediaPipe)
+
+The gesture model and WASM are loaded from a CDN at runtime (`components/handcam/HandCamToggle.tsx`), not bundled into the Worker. That keeps the Worker bundle small. The browser needs internet access to the CDN when HandCam is turned on. No file goes in `public/`.
 
 ## How a run works
 
 1. Sign in with GitHub. Only allowlisted users get in.
 2. Submit a task, optionally with a GitHub repo. The Orchestrator returns a JSON plan: `{summary, units:[{id,title,brief,deps,workers?}]}`.
 3. Units with `workers` become a Lead with Haiku workers. Units without become a standalone Sonnet worker.
-4. Each dispatch runs the engine until it has nothing to do right now (planning, a wave of ready agents, or finalizing), then stops. The next dispatch picks up where it left off.
+4. Each runner tick advances the engine until it has nothing to do right now (planning, a wave of ready agents, or finalizing), then stops. The next tick picks up where it left off.
 5. Leads integrate their workers' reports. The Orchestrator writes a final report.
 6. Risky actions pause only the agent that asked and show an Approve/Deny card. Everything else keeps going.
 
@@ -58,150 +111,42 @@ Concurrency: the workflow uses one concurrency group per run id (`run-<id>`) wit
 | Service | Why | Notes |
 |---|---|---|
 | Claude subscription | Model calls through Claude Code | Create the OAuth token with `claude setup-token`. No API key. |
-| GitHub OAuth app | Sign-in | Callback URL: `https://workflwpro.vercel.app/api/auth/github/callback` |
-| GitHub token (fine-grained) | Dispatch workflows and repo mode | Dispatch needs `actions: write` on this repo. Repo mode needs contents and pull requests on the repos you allow. |
-| Upstash Redis | Run state, queue, locks | REST URL and token |
-| Vercel | Hosting and cron | Hobby works. |
+| Cloudflare | Hosts the Worker | Workers Free plan works. |
+| Upstash | Run state, locks, queue | Free tier is enough for one owner. Use REST URL and token. |
+| GitHub | Sign-in (OAuth app) | Callback URL: `https://workflwpro.flitetest-bhs.workers.dev/api/auth/github/callback`. |
 
-Creating any of these, and any key or secret, is a manual step for the owner.
+## Free-tier notes
 
-## Setup
+- **Workers Free:** 100,000 requests per day and a 10 ms CPU limit per request. Model calls never run on the Worker, so this is rarely hit.
+- **Worker size:** the free plan caps a Worker at 3 MB compressed. Run `npx wrangler deploy --dry-run --outdir=.wrangler-dry` to see the size. The build keeps HandCam and other heavy code out of the bundle.
+- **Upstash free:** limited daily commands. The runner and UI poll only while a run is active.
+- **No cron.** Nothing on Cloudflare schedules work. The PC task is the only driver. If the PC is off, runs wait.
 
-### 1. GitHub OAuth app
+## Scripts
 
-1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.
-2. Homepage URL: `https://workflwpro.vercel.app`.
-3. Authorization callback URL: `https://workflwpro.vercel.app/api/auth/github/callback`. It must match exactly.
-4. Copy the client ID and generate a client secret. Put them in Vercel as `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
-
-### 2. Claude Code OAuth token
-
-```bash
-npm i -g @anthropic-ai/claude-code
-claude setup-token
-```
-
-Copy the printed token into the GitHub repo secret `CLAUDE_CODE_OAUTH_TOKEN`. Do not put it in Vercel.
-
-### 3. Vercel environment variables
-
-Set these in the Vercel project settings for production and preview:
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `SESSION_SECRET` | yes | HMAC key for session cookies. At least 32 characters. `openssl rand -base64 32` |
-| `CRON_SECRET` | yes | Bearer secret for `/api/cron/kick` only. `openssl rand -hex 32` |
-| `ALLOWED_USERS` | yes | Comma-separated GitHub logins, case-insensitive. Empty denies everyone. |
-| `GITHUB_CLIENT_ID` | yes | OAuth app client ID |
-| `GITHUB_CLIENT_SECRET` | yes | OAuth app client secret |
-| `GITHUB_TOKEN` | yes | Fine-grained token with `actions: write` on the repo that holds `run.yml`. Used to dispatch runs. |
-| `UPSTASH_REDIS_REST_URL` | yes | Upstash REST URL |
-| `UPSTASH_REDIS_REST_TOKEN` | yes | Upstash REST token |
-| `DISPATCH_REPO` | yes | `owner/name` of the repo that holds `run.yml` |
-| `DISPATCH_WORKFLOW` | yes | Workflow file name, `run.yml` |
-| `DISPATCH_REF` | yes | Branch to dispatch on, usually `main` |
-| `TICKER_SYMBOLS` | no | Comma-separated tickers for the ticker bar, e.g. `AAPL,MSFT,NVDA`. Empty hides it. |
-| `ORCHESTRATOR_MODEL` | no | Default `claude-opus-5-5` |
-| `LEAD_MODEL` | no | Default `claude-sonnet-5-5` |
-| `WORKER_MODEL` | no | Default `claude-haiku-5-5` |
-
-### 4. GitHub repo secrets (Actions)
-
-Set these under the repo's Settings → Secrets and variables → Actions:
-
-| Secret | Purpose |
+| Command | What it does |
 |---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`. Bills the owner's Claude subscription. |
-| `UPSTASH_REDIS_REST_URL` | Same Upstash database as Vercel. The runner reads and writes run state. |
-| `UPSTASH_REDIS_REST_TOKEN` | Same Upstash token as Vercel |
-| `GH_REPO_TOKEN` | Fine-grained token for repo mode: read, branch, commit, and open PRs on the allowed repos. |
+| `npm run dev` | Next.js dev server (no Cloudflare bindings) |
+| `npm run cf:build` | OpenNext build for Workers into `.open-next/` |
+| `npm run preview` | Build, then run locally on workerd |
+| `npm run deploy` | Build, then deploy to Cloudflare |
+| `npm run runner` | Run the PC runner once, in the foreground |
+| `npm test` | Unit tests |
+| `npm run typecheck` | TypeScript check |
 
-Never set `ANTHROPIC_API_KEY` in Vercel or in Actions. Agents must bill through `CLAUDE_CODE_OAUTH_TOKEN`.
+## Layout
 
-### 5. Deploy
+- `app/`: Next.js pages and API routes (Worker-compatible, no `fs` or `child_process`)
+- `lib/`: engine, store, auth, LLM wiring. `lib/claude-cli.ts` is runner-only.
+- `scripts/runner.ts`: PC runner entry point. Advances one run per tick.
+- `scripts/install-runner-task.ps1`: installs the scheduled task
+- `wrangler.jsonc`: Worker config
+- `open-next.config.ts`: OpenNext adapter config
+- `middleware.ts`: session check on pages and API routes
 
-Connect the repo to Vercel and deploy. Preview deploys are fine. Production deploys need your approval. Then open the site, sign in with GitHub, and start a run.
+## Security notes
 
-### Local development
-
-```bash
-npm install
-cp .env.example .env.local   # fill in values; never commit .env.local
-npm run dev                  # http://localhost:3000
-```
-
-Without Upstash variables, local dev uses an in-memory store. That state is lost on restart, and runs will not reach Actions unless the dispatch variables are set.
-
-Other scripts:
-
-- `npm run typecheck`: `tsc --noEmit`
-- `npm test`: unit tests. They mock Claude, so they make no real calls.
-- `npm run build`: production build
-- `npm start`: serve the production build
-
-## Safety rules
-
-- **Secrets stay out of code, git, and the browser.** Never commit `.env*` files. Never put secrets in `NEXT_PUBLIC_*` variables.
 - **No API keys.** Agents bill through `CLAUDE_CODE_OAUTH_TOKEN`. The runner deletes `ANTHROPIC_API_KEY` if it is present.
-- **The agent's environment is an allowlist.** The `claude` child process gets only an allowlisted environment. It never receives `GH_REPO_TOKEN`, `UPSTASH_*`, `GITHUB_TOKEN`, `SESSION_SECRET`, or `CRON_SECRET`. `CLAUDE_CODE_OAUTH_TOKEN` is the only secret it sees. The runner also redacts known secret values from logs.
-- **Only dispatches advance runs.** The workflow runs only on `workflow_dispatch`, so forks and other events never receive secrets.
-- **Repo mode is write-limited.** Agents write to a run branch only. They never merge, delete, or force-push. You merge the PR yourself.
-- **Approvals gate risky actions.** A risky action pauses the agent that asked until you approve or deny it.
-- **Single user.** WorkflwPro is built for one owner and a short allowlist. It is not multi-tenant. Users can read only their own runs.
-
-## What agents can and cannot do
-
-- Agents can run code, but only through Claude Code inside the GitHub Actions runner. Code they run executes on that disposable runner, not on Vercel.
-- The `claude` child gets `CLAUDE_CODE_OAUTH_TOKEN` as its only secret, so code an agent runs could read it. Treat the token as exposed to agent-run code. Use a token tied to your subscription that you can rotate, and review repo-mode PRs before you merge.
-- Check generated code by reading it and running the tests yourself before you merge.
-
-## Known limits
-
-- **Actions time limits.** The workflow job has `timeout-minutes: 330`. The runner stops starting new steps after about 5 hours, so the last step finishes inside the job limit. Work that does not fit in one job continues in the next dispatch.
-- **Run deadline.** Each run has a 24-hour deadline, counted from creation, whatever the number of dispatches.
-- **Cron is daily on Vercel Hobby.** `vercel.json` schedules `/api/cron/kick` at `0 0 * * *`. That is a backup only. UI opens and approval decisions do most of the work. Pro allows more frequent cron.
-- **Concurrency is one job per run.** A second dispatch for the same run waits for the first.
-- **GitHub rate limits and Claude subscription limits** apply. A run that hits a limit retries later, or fails and reports the error.
-
-## Residual risks
-
-The env allowlist and the Bash deny-list reduce exposure. They do not make the runner a sandbox. Known gaps:
-
-- **Same-user process reads.** The runner deletes `GH_REPO_TOKEN` and the Upstash variables from its own `process.env`, but deleting a variable only unsets it in that process. Agent-run code runs as the same Linux user, so it may still read the runner's environment through `/proc/<pid>/environ` and its memory. Treat `GH_REPO_TOKEN`, the Upstash credentials, and `CLAUDE_CODE_OAUTH_TOKEN` as readable by agent-run code.
-- **The Bash deny-list is best-effort.** `--disallowedTools` blocks named patterns such as `Bash(git push:*)` and `Bash(gh:*)`. Shell code can reach the same actions by other routes (scripts, interpreters, `curl`). Do not rely on it to stop a determined agent.
-- **Anyone with write access can dispatch.** Anyone who can run workflows on this repo can dispatch `run.yml` on any ref, and that job receives the repo secrets. Restrict write and Actions access to the repo. Consider a GitHub Environment with required reviewers that holds the secrets; `run.yml` does not reference one yet.
-- **Scope the tokens.** Make `GH_REPO_TOKEN` a fine-grained personal access token limited to the repos you need, with contents and pull requests access only and no admin or delete rights. Limit the Vercel `GITHUB_TOKEN` to `actions: write` on the dispatch repo. Rotate tokens on a schedule and right away if you suspect exposure. Pin third-party Actions to commit SHAs instead of tags.
-- **Review before merging.** Agent code writes the PR diff. Review it before you press Merge. The Merge step does not run tests or checks for you.
-
-## API
-
-All routes require a signed session, except `/api/auth/*`. The cron route accepts only `Authorization: Bearer $CRON_SECRET`.
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET / POST | `/api/runs` | List your runs / create a run (`{task, repo?}`) |
-| GET | `/api/runs/:id` | Full run: agents, approvals, log, tokens, deadline, PR, final report |
-| POST | `/api/runs/:id/kick` | Dispatch the run from the UI if it has gone quiet for more than 90 seconds |
-| POST | `/api/runs/:id/approvals/:approvalId` | `{decision: "approve" \| "deny"}`. Also dispatches the run. |
-| POST | `/api/runs/:id/merge` | `{confirm: true}`. Owner only. Merges the PR. |
-| GET | `/api/cron/kick` | Cron: dispatch runs idle for more than 3 minutes, skipping runs waiting for approval. `CRON_SECRET` only. |
-
-## Repo layout
-
-- `app/`: pages, layout, and API routes
-- `components/`: UI, including the gesture layer
-- `lib/`: shared types, auth, store, GitHub client, prompts, engine
-- `scripts/runner.ts`: entry point for GitHub Actions. Advances one run.
-- `scripts/lib/`: env checks, git workspace handling, loop, and log redaction
-- `.github/workflows/run.yml`: the Actions workflow that runs the runner
-- `vercel.json`: cron schedule and function durations
-- `ORCHESTRATOR_PROMPT.md`: the Orchestrator's system prompt reference
-
-## Gestures and camera mode
-
-Optional hands-free control. Turn on camera mode from the dashboard and a small hand-tracking panel appears. Hand gestures map to dashboard actions: next or previous view, refresh, toggle sidebar, open detail, and fullscreen.
-
-- Hand tracking runs **in your browser** using MediaPipe (`@mediapipe/tasks-vision`). Camera frames are processed locally and are **not uploaded**.
-- The camera starts only after you turn camera mode on, and stops when you turn it off or leave the page.
-- The app sets `Permissions-Policy: camera=(self)`, so only this site can request the camera.
-- MediaPipe loads its WASM and model assets on first use from the asset host. Self-host them if that matters to you.
+- **Secrets stay where they belong.** Worker secrets are set with `wrangler secret put`. `CLAUDE_CODE_OAUTH_TOKEN` lives only in `runner.env` on the PC.
+- **Agent environment is an allowlist.** The Claude child process gets only an allowlisted environment and `CLAUDE_CODE_OAUTH_TOKEN`. The runner redacts known secret values from logs.
+- The env allowlist and Bash deny-list reduce exposure. They do not make the PC runner a sandbox. Agents can run code on your PC through Claude Code, with your user's permissions. Keep the scheduled task on an account you trust.
