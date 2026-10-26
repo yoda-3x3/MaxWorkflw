@@ -47,9 +47,19 @@ export function timeAgo(then: number, now: number): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-/** True while a run is queued and no agent has started yet: the cloud runner is picking it up. */
+/** True while a run is queued and no agent has started yet: the PC runner is picking it up. */
 export function isRunnerStarting(run: { status: string; agents: { status: string }[] }): boolean {
   return run.status === "queued" && run.agents.every((a) => a.status === "queued");
+}
+
+/** True for a draft: created, attachments may still be uploading, and not queued yet. */
+export function isDraft(run: { status: string }): boolean {
+  return run.status === "draft";
+}
+
+/** Human label for a run status: "draft", "waiting approval", "done". */
+export function statusLabel(status: string): string {
+  return status.replace("_", " ");
 }
 
 /** PR label for display, e.g. "owner/name#12". Null until both repo and PR number exist. */

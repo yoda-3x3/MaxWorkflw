@@ -1,8 +1,15 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import type { RunIndexEntry } from "../../lib/types";
-import { timeAgo } from "./format";
+import { checkUploadSize, formatBytes } from "./attachments";
+import { statusLabel, timeAgo } from "./format";
+
+/** Bytes uploaded so far for the run being started, out of the total. Null when not uploading. */
+export interface UploadProgress {
+  done: number;
+  total: number;
+}
 
 interface Props {
   open: boolean;
@@ -12,8 +19,9 @@ interface Props {
   now: number;
   creating: boolean;
   createError: string | null;
+  uploadProgress: UploadProgress | null;
   onSelect: (id: string) => void;
-  onCreate: (input: { task: string; repo?: string }) => void;
+  onCreate: (input: { task: string; repo?: string }, files: File[]) => void;
 }
 
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -26,12 +34,28 @@ export function RunSidebar({
   now,
   creating,
   createError,
+  uploadProgress,
   onSelect,
   onCreate,
 }: Props) {
   const [task, setTask] = useState("");
   const [repo, setRepo] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+
+  const sizeCheck = checkUploadSize(files);
+  const sizeError = sizeCheck.ok ? null : sizeCheck.error;
+
+  function addFiles(e: ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    // Clear the input so picking the same file again still fires onChange.
+    e.target.value = "";
+    if (picked.length) setFiles((prev) => [...prev, ...picked]);
+  }
+
+  function removeFile(index: number) {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -42,10 +66,15 @@ export function RunSidebar({
     }
     setRepoError(null);
     const trimmedTask = task.trim();
-    if (!trimmedTask) return;
-    onCreate({ task: trimmedTask, repo: trimmedRepo || undefined });
+    if (!trimmedTask || sizeError) return;
+    onCreate({ task: trimmedTask, repo: trimmedRepo || undefined }, files);
     setTask("");
+    setFiles([]);
   }
+
+  const pct = uploadProgress && uploadProgress.total > 0
+    ? Math.round((uploadProgress.done / uploadProgress.total) * 100)
+    : 0;
 
   return (
     <aside className="sidebar" data-open={open} data-no-gesture aria-label="Runs">
@@ -73,10 +102,41 @@ export function RunSidebar({
             spellCheck={false}
           />
         </label>
+        <label>
+          Attachments (optional, up to 20 files, 90 MB total)
+          <input type="file" multiple onChange={addFiles} disabled={creating} />
+        </label>
+        {files.length > 0 && (
+          <ul className="attachment-list" aria-label="Attached files">
+            {files.map((f, i) => (
+              <li key={`${f.name}-${i}`}>
+                <span className="attachment-name">{f.name}</span>
+                <span className="muted">{formatBytes(f.size)}</span>
+                <button
+                  type="button"
+                  onClick={() => removeFile(i)}
+                  disabled={creating}
+                  aria-label={`Remove ${f.name}`}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {sizeError && <p className="form-error">{sizeError}</p>}
         {repoError && <p className="form-error">{repoError}</p>}
         {createError && <p className="form-error">{createError}</p>}
-        <button type="submit" className="primary" disabled={creating || !task.trim()}>
-          {creating ? "Starting…" : "Start run"}
+        {uploadProgress && (
+          <div className="upload-progress">
+            <progress value={uploadProgress.done} max={Math.max(uploadProgress.total, 1)} aria-label="Upload progress" />
+            <span className="muted">
+              Uploading {pct}% ({formatBytes(uploadProgress.done)} of {formatBytes(uploadProgress.total)})
+            </span>
+          </div>
+        )}
+        <button type="submit" className="primary" disabled={creating || !task.trim() || Boolean(sizeError)}>
+          {creating ? (uploadProgress ? "Uploading…" : "Starting…") : "Start run"}
         </button>
       </form>
 
@@ -96,7 +156,7 @@ export function RunSidebar({
               >
                 <span className="history-task">{r.task}</span>
                 <span className="history-meta">
-                  <span className={`status status-${r.status}`}>{r.status.replace("_", " ")}</span>
+                  <span className={`status status-${r.status}`}>{statusLabel(r.status)}</span>
                   {r.repo && <span>{r.repo}</span>}
                   <span>{timeAgo(r.createdAt, now)}</span>
                 </span>
