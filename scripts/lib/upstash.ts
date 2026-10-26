@@ -41,6 +41,11 @@ export const RUNNER_KEYS = {
 // Lua: delete the key only when it still holds our value. Same pattern the store uses for locks.
 const RELEASE_IF_EQUALS = 'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end'
 
+// Puts a run back on the queue, e.g. when shutdown stops it between steps, so no other runner misses it.
+export async function requeueRun(client: UpstashClient, runId: string): Promise<void> {
+  await client.command(['RPUSH', RUNNER_KEYS.queue, runId])
+}
+
 export async function popQueue(client: UpstashClient, max: number): Promise<string[]> {
   const result = await client.command(['LPOP', RUNNER_KEYS.queue, max])
   if (result === null || result === undefined) return []
