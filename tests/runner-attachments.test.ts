@@ -86,9 +86,9 @@ function fakeSource(files: Record<string, Buffer>, opts: { dropChunk?: string } 
     async listRunFiles() { return metas },
     async readFileChunks(_runId, fileId, indexes) {
       reads.push(indexes)
-      const data = files[fileId].toString('base64')
-      const perChunk = Math.ceil(CHUNK_BYTES / 3) * 4
-      return indexes.map((n) => (fileId === opts.dropChunk && n === 0 ? null : data.slice(n * perChunk, (n + 1) * perChunk)))
+      // Each chunk is its own base64 of a raw slice, as the site stores it.
+      const raw = files[fileId]
+      return indexes.map((n) => (fileId === opts.dropChunk && n === 0 ? null : raw.subarray(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES).toString('base64')))
     },
     async deleteRunFile(_runId, fileId) { deleted.push(fileId) },
   }
@@ -154,4 +154,11 @@ test('materializeAttachments keeps two files with the same name', async () => {
   const paths = await materializeAttachments('run-1', runDirFor('C:/work', 'run-1'), deps)
   assert.equal(new Set(paths).size, 2)
   assert.equal(written.size, 2)
+})
+
+test('assembleBase64 decodes padded middle chunks correctly', () => {
+  const a = Buffer.from([1, 2, 3, 4])
+  const b = Buffer.from([5, 6])
+  const out = assembleBase64([a.toString('base64'), b.toString('base64')], 6)
+  assert.deepEqual(out, Buffer.from([1, 2, 3, 4, 5, 6]))
 })

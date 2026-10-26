@@ -42,11 +42,13 @@ export function checkDeclaredSize(size: number): void {
   if (size > MAX_ATTACHMENT_BYTES) throw new AttachmentError(`attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes`)
 }
 
-// Joins base64 chunks in order and checks the decoded length against the declared size.
+// Decodes each base64 chunk on its own, then joins the bytes in order, and checks the total against
+// the declared size. Chunks are raw slices whose length is not a multiple of 3, so each one can carry
+// its own '=' padding. Joining the base64 text first would corrupt the file.
 // A short or long file is an error, never silently written.
 export function assembleBase64(chunks: string[], expectedBytes: number): Buffer {
   checkDeclaredSize(expectedBytes)
-  const buf = Buffer.from(chunks.join(''), 'base64')
+  const buf = Buffer.concat(chunks.map((c) => Buffer.from(c, 'base64')))
   if (buf.length !== expectedBytes) {
     throw new AttachmentError(`attachment size mismatch: expected ${expectedBytes} bytes, got ${buf.length}`)
   }

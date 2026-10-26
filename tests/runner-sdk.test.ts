@@ -87,3 +87,34 @@ test('complete throws when the agent errors, so the engine records a failure', a
   })
   await assert.rejects(llm.complete({ model: 'm', prompt: 'p' }), /ENOENT/)
 })
+
+test('work tells the agent about attachments and grants read access to their folder', async () => {
+  let options: Record<string, unknown> = {}
+  const llm = createSdkLlm({
+    env: {},
+    attachmentsDir: 'C:/work/run-1/uploads',
+    attachmentPaths: ['C:/work/run-1/uploads/a.txt'],
+    queryFn: ({ options: o }) => {
+      options = o
+      return (async function* () { yield ok('done') })()
+    },
+  })
+  await llm.work({ model: 'm', prompt: 'p', system: 'base rules' })
+  assert.match(String(options.systemPrompt), /^base rules\n\nFiles attached/)
+  assert.match(String(options.systemPrompt), /- C:\/work\/run-1\/uploads\/a\.txt/)
+  assert.deepEqual(options.additionalDirectories, ['C:/work/run-1/uploads'])
+})
+
+test('work without attachments leaves the system prompt and directories unchanged', async () => {
+  let options: Record<string, unknown> = {}
+  const llm = createSdkLlm({
+    env: {},
+    queryFn: ({ options: o }) => {
+      options = o
+      return (async function* () { yield ok('done') })()
+    },
+  })
+  await llm.work({ model: 'm', prompt: 'p', system: 'base rules' })
+  assert.equal(options.systemPrompt, 'base rules')
+  assert.deepEqual(options.additionalDirectories, [])
+})
