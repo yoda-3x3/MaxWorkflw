@@ -86,17 +86,18 @@ test('buildAgents: a unit without workers is a standalone sonnet worker, and uni
 })
 
 test('caps: an over-budget plan is truncated to MAX_AGENTS including the orchestrator, and the cut is reported', () => {
-  // Each unit costs 7 agents (lead + 6 workers). Two fit in the 14-agent budget. The third is cut.
+  // Each lead-plus-6-workers unit costs 7 agents. Four fill 28 of the 29 planned slots. A standalone
+  // unit (cost 1) fills the last slot, so the fifth heavy unit and the trailing standalone are cut.
   const raw: Plan = {
     summary: 's',
-    units: [unit('a', 6), unit('b', 6), unit('c', 6)] as Plan['units'],
+    units: [unit('a', 6), unit('b', 6), unit('c', 6), unit('d', 6), unit('e'), unit('f'), unit('g', 6)] as Plan['units'],
   }
   const { plan, cut } = capPlan(raw, MAX_AGENTS)
   assert.deepEqual(
     plan.units.map((u) => u.id),
-    ['a', 'b'],
+    ['a', 'b', 'c', 'd', 'e'],
   )
-  assert.deepEqual(cut, ['c'])
+  assert.deepEqual(cut, ['f', 'g'])
   const agents = buildAgents(plan, 'r1', 'orch', models, 0)
   assert.equal(agents.length + 1, MAX_AGENTS, 'orchestrator + planned agents fills exactly the cap, no more')
 })
@@ -104,7 +105,8 @@ test('caps: an over-budget plan is truncated to MAX_AGENTS including the orchest
 test('caps: a unit that depends on a cut unit is cut too', () => {
   const raw: Plan = {
     summary: 's',
-    units: [unit('a', 13), unit('b'), unit('c', 0, ['b'])] as Plan['units'],
+    // a costs 21 and fits. b costs 10, so 21 + 10 > 29 and b is cut. c depends on b, so it is cut too.
+    units: [unit('a', 20), unit('b', 9), unit('c', 0, ['b'])] as Plan['units'],
   }
   const { plan, cut } = capPlan(raw, MAX_AGENTS)
   assert.deepEqual(
