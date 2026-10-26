@@ -6,7 +6,6 @@ import { branchForRun } from '../lib/github'
 import {
   LOCK_TTL_SEC,
   createRun,
-  runStep,
   step,
   type EngineDeps,
   type EngineGitHub,
@@ -21,9 +20,9 @@ import { AGENT_STALL_MS, RUN_DEADLINE_MS, type ApprovalDecision, type Run } from
 
 const models = { orchestrator: 'opus-test', lead: 'sonnet-test', worker: 'haiku-test' }
 
-const isPlanner = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator of MaxWorkflw')
+const isPlanner = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator of WorkflwPro')
 const isFinal = (c: MockCall) => c.kind === 'complete' && (c.req.system ?? '').startsWith('You are the Orchestrator writing the final report')
-const isLead = (c: MockCall) => c.kind === 'work' && (c.req.system ?? '').startsWith('You are a lead in MaxWorkflw')
+const isLead = (c: MockCall) => c.kind === 'work' && (c.req.system ?? '').startsWith('You are a lead in WorkflwPro')
 const promptOf = (c: MockCall) => c.req.prompt
 const planReply = (units: unknown[]) => ({ text: JSON.stringify({ summary: 'plan summary', units }) })
 const approvalFor = (rule: 1 | 2 | 3 | 4, request: string) => ({ text: '', approval: { rule, request } })
@@ -429,12 +428,6 @@ test('a commit that throws fails that attempt, and the retry commits the work', 
   assert.equal(x.status, 'done')
   assert.equal(x.attempts, 2)
   assert.equal(env.gh.prs.length, 1)
-})
-
-test('runStep returns only the more flag', async () => {
-  const env = setup((c) => (isPlanner(c) ? planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }]) : { text: 'ok' }))
-  const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
-  assert.deepEqual(await runStep(run.id, env.deps), { more: true })
 })
 
 test('a save that fails after the plan is attached rolls back, so the retry plans once with no duplicate agents', async () => {

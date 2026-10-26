@@ -1,5 +1,5 @@
-import { createRun } from "@/lib/engine";
-import { dispatchRun, getCaller, json, runAfterResponse } from "@/lib/session";
+import { buildRun } from "@/lib/engine";
+import { getCaller, json } from "@/lib/session";
 import { getRunStore } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -8,12 +8,16 @@ export const dynamic = "force-dynamic";
 const MAX_TASK_CHARS = 8000;
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
+/** Run history plus whether the PC runner is online. One Upstash call each, in parallel. */
 export async function GET(req: Request) {
   const caller = await getCaller(req);
   if (!caller) return json({ error: "unauthorized" }, 401);
-  return json({ runs: await getRunStore().listRunsForOwner(caller.id) });
+  const store = getRunStore();
+  const [runs, runner] = await Promise.all([store.listRunsForOwner(caller.id), store.getRunnerStatus()]);
+  return json({ runs, runner: { online: runner.online } });
 }
 
+/** Starts a run. Only signed-in users on ALLOWED_USERS get here (getCaller checks the allowlist). */
 export async function POST(req: Request) {
   const caller = await getCaller(req);
   if (!caller) return json({ error: "unauthorized" }, 401);
@@ -33,7 +37,8 @@ export async function POST(req: Request) {
     repo = body.repo;
   }
 
-  const run = await createRun({ ownerId: caller.id, task, repo });
-  runAfterResponse(() => dispatchRun(run.id));
+  const run = buildRun({ ownerId: caller.id, task, repo });
+  // One Upstash call: the run record, its history and active index, and the runner queue.
+  await getRunStore().saveRun(run, { queue: true });
   return json(run, 201);
 }

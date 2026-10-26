@@ -1,10 +1,10 @@
-// GitHub access for MaxWorkflw runs.
+// GitHub access for WorkflwPro runs.
 //
 // Every operation is scoped to the branch `workflwpro/<runId>`. The branch is
 // created on demand from the repo's default branch. There is no delete and no
 // force-push. Merging is only possible through mergePR, and only when the
-// caller passes `explicit: true`. dispatchRunWorkflow starts a workflow run
-// and does not touch any branch.
+// caller passes `explicit: true`. The runner owns the checkout; this module
+// only opens PRs and merges them.
 
 export const BRANCH_PREFIX = 'workflwpro/';
 
@@ -89,7 +89,7 @@ export interface MergePRResult {
 
 /**
  * Throws PathPolicyError unless the run id is safe to use in a branch name or a
- * workflow input. Run ids are restricted so they cannot escape the `workflwpro/` namespace.
+ * branch name. Run ids are restricted so they cannot escape the `workflwpro/` namespace.
  */
 export function assertRunId(runId: string): string {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/.test(runId)
@@ -280,7 +280,7 @@ export function createGitHubClient(opts: GitHubClientOptions) {
           if (!(err instanceof GitHubError && err.status === 404)) throw err;
         }
         const res: any = await request('PUT', url, {
-          message: `maxworkflw: update ${path}`,
+          message: `workflwpro: update ${path}`,
           content: Buffer.from(content, 'utf8').toString('base64'),
           branch,
           ...(sha ? { sha } : {}),
@@ -338,79 +338,3 @@ export function createGitHubClient(opts: GitHubClientOptions) {
 }
 
 export type GitHubClient = ReturnType<typeof createGitHubClient>;
-
-export interface DispatchRunOptions {
-  /** `owner/name` of the repo that holds the workflow. */
-  repo: string;
-  token: string;
-  /** Workflow file name or numeric id. Defaults to run.yml. */
-  workflow?: string;
-  /** Git ref to run the workflow on. Defaults to main. */
-  ref?: string;
-  /** Passed to the workflow as the `run_id` input. */
-  runId: string;
-  /** Injected for tests. Defaults to global fetch. */
-  fetch?: typeof fetch;
-}
-
-/**
- * Starts a workflow_dispatch run with `inputs.run_id`. GitHub answers 204 on
- * success. 404, 403 and 422 are mapped to a GitHubError with a hint about the likely cause.
- */
-export async function dispatchRunWorkflow(opts: DispatchRunOptions): Promise<void> {
-  assertRunId(opts.runId);
-  const [owner, name, ...rest] = opts.repo.split('/');
-  if (!owner || !name || rest.length > 0) {
-    throw new GitHubError(400, `dispatch repo must be owner/name, got ${JSON.stringify(opts.repo)}`);
-  }
-  const workflow = opts.workflow ?? 'run.yml';
-  const ref = opts.ref ?? 'main';
-  if (workflow === '') throw new GitHubError(400, 'dispatch workflow must not be empty');
-  if (ref === '') throw new GitHubError(400, 'dispatch ref must not be empty');
-
-  const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`
-    + `/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
-  const doFetch = opts.fetch ?? globalThis.fetch;
-  try {
-    await githubRequest(doFetch, DEFAULT_API_BASE, opts.token, 'POST', path, {
-      ref,
-      inputs: { run_id: opts.runId },
-    });
-  } catch (err) {
-    if (!(err instanceof GitHubError)) throw err;
-    const hint = dispatchHint(err.status, opts.repo, workflow, ref);
-    if (!hint) throw err;
-    throw new GitHubError(err.status, `${hint} (${err.message})`);
-  }
-}
-
-function dispatchHint(status: number, repo: string, workflow: string, ref: string): string | null {
-  switch (status) {
-    case 404:
-      return `Workflow "${workflow}" not found in ${repo}, or the token cannot see that repo. Check DISPATCH_REPO and DISPATCH_WORKFLOW.`;
-    case 403:
-      return `Token is not allowed to dispatch workflows in ${repo}. It needs Actions: write permission.`;
-    case 422:
-      return `GitHub rejected the dispatch on ref "${ref}". Check that the ref exists and that ${workflow} declares workflow_dispatch with a run_id input.`;
-    default:
-      return null;
-  }
-}
-
-export interface DispatchConfig {
-  /** Undefined when GITHUB_TOKEN is unset or empty. */
-  token: string | undefined;
-  repo: string;
-  workflow: string;
-  ref: string;
-}
-
-/** Reads dispatch settings from the environment. Missing values fall back to the defaults. */
-export function getDispatchConfig(env: Record<string, string | undefined>): DispatchConfig {
-  return {
-    token: env.GITHUB_TOKEN?.trim() || undefined,
-    repo: env.DISPATCH_REPO || 'yoda-3x3/MaxWorkflw',
-    workflow: env.DISPATCH_WORKFLOW || 'run.yml',
-    ref: env.DISPATCH_REF || 'main',
-  };
-}
