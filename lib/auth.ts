@@ -19,6 +19,7 @@ export interface AuthEnv {
   SESSION_SECRET?: string;
   ALLOWED_USERS?: string;
   CRON_SECRET?: string;
+  APP_ORIGIN?: string;
 }
 
 interface Signed {
