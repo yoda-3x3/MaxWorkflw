@@ -3,7 +3,7 @@
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import type { RunIndexEntry } from "../../lib/types";
 import { checkUploadSize, formatBytes } from "./attachments";
-import { timeAgo } from "./format";
+import { statusLabel, timeAgo } from "./format";
 
 /** Bytes uploaded so far for the run being started, out of the total. Null when not uploading. */
 export interface UploadProgress {
@@ -156,7 +156,7 @@ export function RunSidebar({
               >
                 <span className="history-task">{r.task}</span>
                 <span className="history-meta">
-                  <span className={`status status-${r.status}`}>{r.status.replace("_", " ")}</span>
+                  <span className={`status status-${r.status}`}>{statusLabel(r.status)}</span>
                   {r.repo && <span>{r.repo}</span>}
                   <span>{timeAgo(r.createdAt, now)}</span>
                 </span>

@@ -8,8 +8,10 @@ import {
   deadlineLabel,
   deadlineProgress,
   formatTokens,
+  isDraft,
   isRunnerStarting,
   prLabel,
+  statusLabel,
 } from "./format";
 
 interface Props {
@@ -17,17 +19,33 @@ interface Props {
   files?: RunFile[];
   now: number;
   onMerge: () => Promise<void>;
+  onStart: () => Promise<void>;
 }
 
 const TERMINAL = new Set(["done", "failed"]);
 
-export function RunHeader({ run, files, now, onMerge }: Props) {
+export function RunHeader({ run, files, now, onMerge, onStart }: Props) {
   const [merging, setMerging] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const prText = prLabel(run.repo, run.prNumber);
   const canMerge = Boolean(run.prUrl) && run.status === "done";
+  const draft = isDraft(run);
   const active = !TERMINAL.has(run.status);
   const progress = deadlineProgress(run.createdAt, run.deadlineAt, now);
+
+  async function startDraft() {
+    setStarting(true);
+    setStartError(null);
+    try {
+      await onStart();
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStarting(false);
+    }
+  }
 
   async function confirmMerge() {
     const label = prText ?? "this PR";
@@ -49,7 +67,7 @@ export function RunHeader({ run, files, now, onMerge }: Props) {
   return (
     <header className="run-header">
       <div className="run-title">
-        <span className={`status status-${run.status}`}>{run.status.replace("_", " ")}</span>
+        <span className={`status status-${run.status}`}>{statusLabel(run.status)}</span>
         <h1>{run.task}</h1>
       </div>
 
@@ -95,9 +113,21 @@ export function RunHeader({ run, files, now, onMerge }: Props) {
         </section>
       )}
 
+      {draft && (
+        <div className="draft-note">
+          <p className="muted">
+            Draft: not started. Attachments are kept for 24 hours. Start it when you are ready.
+          </p>
+          <button type="button" className="primary" onClick={startDraft} disabled={starting}>
+            {starting ? "Starting…" : "Start run"}
+          </button>
+          {startError && <p className="form-error">Could not start: {startError}</p>}
+        </div>
+      )}
+
       {isRunnerStarting(run) && <p className="muted">runner starting...</p>}
 
-      {active && (
+      {active && !draft && (
         <p className="cloud-note">
           Runs on your PC runner with your Claude subscription. Safe to close this tab.
         </p>

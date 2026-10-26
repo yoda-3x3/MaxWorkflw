@@ -6,8 +6,10 @@ import {
   deadlineProgress,
   formatDuration,
   formatTokens,
+  isDraft,
   isRunnerStarting,
   prLabel,
+  statusLabel,
   timeAgo,
 } from "./format";
 
@@ -56,6 +58,18 @@ test("isRunnerStarting is true only while queued with no agent started", () => {
   assert.equal(isRunnerStarting({ status: "queued", agents: [{ status: "running" }] }), false);
   assert.equal(isRunnerStarting({ status: "planning", agents: [] }), false);
   assert.equal(isRunnerStarting({ status: "done", agents: [] }), false);
+});
+
+test("isDraft is true only for the draft status, and a draft is never runner-starting", () => {
+  assert.equal(isDraft({ status: "draft" }), true);
+  assert.equal(isDraft({ status: "queued" }), false);
+  assert.equal(isRunnerStarting({ status: "draft", agents: [] }), false);
+});
+
+test("statusLabel shows draft plainly and spaces out underscores", () => {
+  assert.equal(statusLabel("draft"), "draft");
+  assert.equal(statusLabel("waiting_approval"), "waiting approval");
+  assert.equal(statusLabel("done"), "done");
 });
 
 test("prLabel needs both repo and PR number", () => {

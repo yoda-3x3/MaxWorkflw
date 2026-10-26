@@ -267,6 +267,18 @@ h2 {
   font-size: 0.8rem;
 }
 
+.status-draft {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.draft-note {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: start;
+  margin: 0.5rem 0;
+}
+
 .status-running,
 .status-planning,
 .status-finalizing {

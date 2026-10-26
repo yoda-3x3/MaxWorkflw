@@ -110,6 +110,13 @@ export function Shell() {
     dispatch({ type: "refresh" });
   }
 
+  // Starts a draft whose uploads are complete. The server rejects an incomplete file with 409.
+  async function handleStart() {
+    if (!current) return;
+    await startRun(current.id);
+    dispatch({ type: "refresh" });
+  }
+
   async function handleMerge() {
     if (!current) return;
     await mergeRun(current.id);
@@ -175,7 +182,13 @@ export function Shell() {
 
         {current && (
           <>
-            <RunHeader run={current} files={files.data} now={now} onMerge={handleMerge} />
+            <RunHeader
+              run={current}
+              files={files.data}
+              now={now}
+              onMerge={handleMerge}
+              onStart={handleStart}
+            />
             <ApprovalCards
               approvals={pendingApprovals}
               agents={current.agents}
