@@ -18,6 +18,15 @@ export const AGENT_STALL_MS = 5 * 60 * 1000;
 /** Each agent gets this many attempts in total (one retry) before it is marked failed. */
 export const AGENT_MAX_ATTEMPTS = 2;
 
+/** Largest single attachment. */
+export const MAX_UPLOAD_BYTES = 90 * 1024 * 1024;
+/** Largest total of attachments on one run. */
+export const MAX_RUN_UPLOAD_BYTES = 90 * 1024 * 1024;
+/** Max attachments per run. */
+export const MAX_FILES_PER_RUN = 20;
+/** Every chunk except the last is exactly this many raw bytes. One chunk is one request. */
+export const UPLOAD_CHUNK_BYTES = 512 * 1024;
+
 // ---- Tiers, roles, models ----
 
 /** 1 = Orchestrator, 2 = Lead, 3 = Worker. */
