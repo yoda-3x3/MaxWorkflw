@@ -151,7 +151,7 @@ HandCam loads the MediaPipe WASM and gesture model from a CDN when you turn it o
 
 ### Limits (enforced in code)
 
-- At most **15 agents** per run, counted across all tiers. Plans over the cap are truncated and the cut is logged.
+- At most **30 agents** per run, counted across all tiers. Plans over the cap are truncated and the cut is logged.
 - At most **3 tiers**: Orchestrator, Lead, Worker.
 - Each run has a **24-hour deadline**. A run past it fails with a clear message.
 - Each agent gets **one retry** (two attempts in total). After that it is marked failed, and the run continues and reports it.
