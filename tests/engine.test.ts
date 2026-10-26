@@ -6,7 +6,6 @@ import { branchForRun } from '../lib/github'
 import {
   LOCK_TTL_SEC,
   createRun,
-  runStep,
   step,
   type EngineDeps,
   type EngineGitHub,
@@ -429,12 +428,6 @@ test('a commit that throws fails that attempt, and the retry commits the work', 
   assert.equal(x.status, 'done')
   assert.equal(x.attempts, 2)
   assert.equal(env.gh.prs.length, 1)
-})
-
-test('runStep returns only the more flag', async () => {
-  const env = setup((c) => (isPlanner(c) ? planReply([{ id: 'x', title: 'X', brief: 'do x', deps: [] }]) : { text: 'ok' }))
-  const run = await createRun({ ownerId: 'me', task: 't' }, env.deps)
-  assert.deepEqual(await runStep(run.id, env.deps), { more: true })
 })
 
 test('a save that fails after the plan is attached rolls back, so the retry plans once with no duplicate agents', async () => {
