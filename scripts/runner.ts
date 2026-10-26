@@ -11,7 +11,7 @@ import { step } from '../lib/engine'
 import { createGitHubClient } from '../lib/github'
 import { resolveModels } from '../lib/llm'
 import { getRunStore } from '../lib/store'
-import { createSdkLlm } from './lib/sdk-llm'
+import { createSdkLlm, usageLimitFrom } from './lib/sdk-llm'
 import {
   isFinishedStatus,
   prepareRunAttachments,
@@ -137,6 +137,10 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
             env: process.env,
             attachmentPaths: attachments?.paths ?? [],
             attachmentsDir: attachments?.uploadsDir,
+            onRateLimit: (info) => {
+              const limit = usageLimitFrom(info)
+              if (limit) void store.recordUsageLimit(limit).catch(() => undefined)
+            },
           }),
           store,
           github: (repo: string) => {

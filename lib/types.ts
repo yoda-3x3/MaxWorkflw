@@ -200,6 +200,19 @@ export interface RunnerHeartbeat {
 }
 
 /** What the site reports about the runner. `online` is false when the heartbeat key has expired. */
+/**
+ * Claude subscription usage, from the SDK's rate_limit_event (one per limit window, e.g. "five_hour",
+ * "seven_day"). utilization is 0..1 (or 0..100 from some SDK versions); resetsAt is unix seconds.
+ */
+export interface UsageLimit {
+  type: string;
+  status: string;
+  utilization?: number;
+  resetsAt?: number;
+  /** Epoch ms when the runner last saw it. */
+  updatedAt: number;
+}
+
 export interface RunnerStatus {
   online: boolean;
   runnerId?: string;

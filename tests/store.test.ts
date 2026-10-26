@@ -429,3 +429,16 @@ test("file ids are validated before touching storage", async () => {
   const store = createRunStore(createMemoryBackend());
   await assert.rejects(store.readFileChunk("r1", "../x", 0), /invalid file id/);
 });
+
+test("usage limits: one entry per window, latest wins, sorted by type", async () => {
+  const store = createRunStore(createMemoryBackend());
+  assert.deepEqual(await store.getUsageLimits(), []);
+  await store.recordUsageLimit({ type: "seven_day", status: "allowed", utilization: 0.88, resetsAt: 1_800_000_000, updatedAt: 1 });
+  await store.recordUsageLimit({ type: "five_hour", status: "allowed", utilization: 0.1, updatedAt: 2 });
+  await store.recordUsageLimit({ type: "seven_day", status: "allowed_warning", utilization: 0.9, updatedAt: 3 });
+  const usage = await store.getUsageLimits();
+  assert.deepEqual(usage.map((u) => [u.type, u.utilization, u.status]), [
+    ["five_hour", 0.1, "allowed"],
+    ["seven_day", 0.9, "allowed_warning"],
+  ]);
+});

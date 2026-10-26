@@ -32,6 +32,30 @@ export function agentCountLabel(count: number): string {
   return `${count}/${MAX_AGENTS}`;
 }
 
+/** Usage as a percent, 0..100. The SDK sends 0..1; some versions send 0..100. */
+export function usagePercent(utilization: number | undefined): number {
+  const u = utilization ?? 0;
+  return Math.min(100, Math.max(0, u <= 1 ? u * 100 : u));
+}
+
+/** "five_hour" -> "5-hour", "seven_day" -> "7-day"; anything else just loses its underscores. */
+export function usageLabel(type: string): string {
+  const named: Record<string, string> = { five_hour: "5-hour", seven_day: "7-day", seven_day_opus: "7-day Opus", seven_day_sonnet: "7-day Sonnet" };
+  return named[type] ?? type.replaceAll("_", " ");
+}
+
+/** "resets 10:00 PM · in 2h 39m" (resetsAt is unix seconds from the SDK; ms tolerated). */
+export function usageResetLabel(resetsAt: number, now: number): string {
+  const at = resetsAt > 1e12 ? resetsAt : resetsAt * 1000;
+  const left = at - now;
+  if (left <= 0) return "reset now";
+  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
+  const when = new Date(at).toLocaleString([], sameDay ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", hour: "numeric", minute: "2-digit" });
+  const h = Math.floor(left / 3_600_000);
+  const m = Math.round((left % 3_600_000) / 60_000);
+  return `resets ${when} · in ${h ? `${h}h ` : ""}${m}m`;
+}
+
 /** Share of the 24h deadline already used, clamped to [0, 1]. */
 export function deadlineProgress(createdAt: number, deadlineAt: number, now: number): number {
   const total = deadlineAt - createdAt || RUN_DEADLINE_MS;

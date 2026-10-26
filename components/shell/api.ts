@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ApprovalDecision, Run, RunFile, RunIndexEntry } from "../../lib/types";
+import type { ApprovalDecision, Run, RunFile, RunIndexEntry, UsageLimit } from "../../lib/types";
 import { chunkRanges, withRetry } from "./attachments";
 
 export const POLL_MS = 3000;
@@ -21,6 +21,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface RunsResponse {
   runs: RunIndexEntry[];
   runner?: { online: boolean };
+  /** Claude subscription usage per limit window, as last seen by the runner. */
+  usage?: UsageLimit[];
 }
 
 export function listRuns(): Promise<RunsResponse> {

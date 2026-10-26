@@ -4,6 +4,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { APPROVAL_LINE, DISALLOWED_BASH, ENV_ALLOWLIST, WORK_TOOLS } from '../../lib/claude-cli'
 import type { Approval, CompleteRequest, CompleteResult, Llm, Usage, WorkRequest, WorkResult } from '../../lib/llm'
+import type { UsageLimit } from '../../lib/types'
 import { attachmentNote } from './attachments'
 
 // The slice of an SDK message this file reads. Kept loose so one SDK version bump is one edit here.
@@ -13,6 +14,8 @@ export interface AgentMessage {
   result?: string
   is_error?: boolean
   usage?: { input_tokens?: number; output_tokens?: number }
+  /** On type "rate_limit_event": the subscription's usage for one limit window. */
+  rate_limit_info?: Record<string, unknown>
 }
 
 export interface RunOutcome {
@@ -64,6 +67,21 @@ export interface SdkLlmOptions {
   /** Run attachments on this PC. Their paths go into the agent's system prompt, and the folder gets read access. */
   attachmentsDir?: string
   attachmentPaths?: string[]
+  /** Called with each rate_limit_event's info (Claude subscription usage). Errors are ignored. */
+  onRateLimit?: (info: Record<string, unknown>) => void
+}
+
+/** A rate_limit_event's info as a UsageLimit, or null if it has no limit type. */
+export function usageLimitFrom(info: Record<string, unknown>, now = Date.now()): UsageLimit | null {
+  const type = typeof info.rateLimitType === 'string' ? info.rateLimitType : null
+  if (!type) return null
+  return {
+    type,
+    status: typeof info.status === 'string' ? info.status : 'unknown',
+    ...(typeof info.utilization === 'number' ? { utilization: info.utilization } : {}),
+    ...(typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : {}),
+    updatedAt: now,
+  }
 }
 
 export function createSdkLlm(opts: SdkLlmOptions): Llm {
@@ -79,6 +97,13 @@ export function createSdkLlm(opts: SdkLlmOptions): Llm {
     try {
       for await (const m of run({ prompt, options: { ...options, abortController: controller, env: agentEnv(opts.env) } })) {
         messages.push(m)
+        if (m.type === 'rate_limit_event' && m.rate_limit_info) {
+          try {
+            opts.onRateLimit?.(m.rate_limit_info)
+          } catch {
+            // usage display only; never fail the run over it
+          }
+        }
       }
     } catch (err) {
       return { text: '', usage: { input: 0, output: 0 }, error: err instanceof Error ? err.message : String(err) }

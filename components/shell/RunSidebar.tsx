@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, type ChangeEvent, type FormEvent } from "react";
-import type { RunIndexEntry } from "../../lib/types";
+import type { RunIndexEntry, UsageLimit } from "../../lib/types";
 import { checkUploadSize, formatBytes } from "./attachments";
-import { statusLabel, timeAgo } from "./format";
+import { statusLabel, timeAgo, usageLabel, usagePercent, usageResetLabel } from "./format";
 
 /** Bytes uploaded so far for the run being started, out of the total. Null when not uploading. */
 export interface UploadProgress {
@@ -14,6 +14,8 @@ export interface UploadProgress {
 interface Props {
   open: boolean;
   runs: RunIndexEntry[] | undefined;
+  /** Claude subscription usage per limit window; empty until the runner has made a call. */
+  usage: UsageLimit[] | undefined;
   error: string | null;
   selectedId: string | null;
   now: number;
@@ -29,6 +31,7 @@ const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export function RunSidebar({
   open,
   runs,
+  usage,
   error,
   selectedId,
   now,
@@ -79,6 +82,30 @@ export function RunSidebar({
   return (
     <aside className="sidebar" data-open={open} data-no-gesture aria-label="Runs">
       <div className="brand">WorkflwPro</div>
+
+      <section className="usage" aria-label="Claude usage">
+        <h2>Claude usage</h2>
+        {!usage?.length ? (
+          <p className="muted">Shows up after the runner's first Claude call.</p>
+        ) : (
+          <ul>
+            {usage.map((u) => {
+              const pct = usagePercent(u.utilization);
+              const level = u.status === "rejected" || pct >= 90 ? "bad" : pct >= 75 ? "warn" : "ok";
+              return (
+                <li key={u.type} className="usage-row" data-level={level}>
+                  <span className="usage-name">{usageLabel(u.type)}</span>
+                  <span className="usage-bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)} aria-label={`${usageLabel(u.type)} usage`}>
+                    <span style={{ width: `${pct}%` }} />
+                  </span>
+                  <span className="usage-pct">{Math.round(pct)}%</span>
+                  {typeof u.resetsAt === "number" && <span className="usage-reset muted">{usageResetLabel(u.resetsAt, now)}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <form className="new-run" onSubmit={submit}>
         <h2>New run</h2>

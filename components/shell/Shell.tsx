@@ -137,6 +137,7 @@ export function Shell() {
       <RunSidebar
         open={shell.sidebarOpen}
         runs={runs}
+        usage={runsPoll.data?.usage}
         error={runsPoll.error}
         selectedId={selectedId}
         now={now}

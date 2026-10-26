@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { agentEnv, createSdkLlm, parseApproval, summarizeMessages, type AgentMessage } from '../scripts/lib/sdk-llm'
+import { agentEnv, createSdkLlm, parseApproval, summarizeMessages, usageLimitFrom, type AgentMessage } from '../scripts/lib/sdk-llm'
 
 const ok = (result: string, input = 10, output = 5): AgentMessage => ({
   type: 'result',
@@ -117,4 +117,27 @@ test('work without attachments leaves the system prompt and directories unchange
   await llm.work({ model: 'm', prompt: 'p', system: 'base rules' })
   assert.equal(options.systemPrompt, 'base rules')
   assert.deepEqual(options.additionalDirectories, [])
+})
+
+test('usageLimitFrom maps rate_limit_info and skips entries without a type', () => {
+  assert.deepEqual(usageLimitFrom({ rateLimitType: 'five_hour', status: 'allowed', utilization: 0.4, resetsAt: 123 }, 9), {
+    type: 'five_hour', status: 'allowed', utilization: 0.4, resetsAt: 123, updatedAt: 9,
+  })
+  assert.deepEqual(usageLimitFrom({ rateLimitType: 'seven_day' }, 9), { type: 'seven_day', status: 'unknown', updatedAt: 9 })
+  assert.equal(usageLimitFrom({ status: 'allowed' }), null)
+})
+
+test('the work loop reports rate_limit_event to onRateLimit', async () => {
+  const seen: Record<string, unknown>[] = []
+  const llm = createSdkLlm({
+    env: {},
+    onRateLimit: (info) => seen.push(info),
+    queryFn: async function* () {
+      yield { type: 'rate_limit_event', rate_limit_info: { rateLimitType: 'seven_day', utilization: 0.88 } }
+      yield { type: 'result', subtype: 'success', result: 'done', usage: { input_tokens: 1, output_tokens: 1 } }
+    } as never,
+  })
+  const r = await llm.complete({ model: 'm', system: 's', prompt: 'p' } as never)
+  assert.equal(r.text, 'done')
+  assert.deepEqual(seen, [{ rateLimitType: 'seven_day', utilization: 0.88 }])
 })

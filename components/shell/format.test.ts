@@ -11,6 +11,9 @@ import {
   prLabel,
   statusLabel,
   timeAgo,
+  usageLabel,
+  usagePercent,
+  usageResetLabel,
 } from "./format";
 
 test("formatDuration picks the right unit", () => {
@@ -76,4 +79,16 @@ test("prLabel needs both repo and PR number", () => {
   assert.equal(prLabel("yoda-3x3/WorkflwPro", 12), "yoda-3x3/WorkflwPro#12");
   assert.equal(prLabel(undefined, 12), null);
   assert.equal(prLabel("a/b", undefined), null);
+});
+
+test("usage helpers: percent scale, labels, reset text", () => {
+  assert.equal(usagePercent(0.88), 88);
+  assert.equal(usagePercent(88), 88);
+  assert.equal(usagePercent(undefined), 0);
+  assert.equal(usageLabel("five_hour"), "5-hour");
+  assert.equal(usageLabel("seven_day"), "7-day");
+  assert.equal(usageLabel("other_thing"), "other thing");
+  const now = Date.UTC(2026, 9, 26, 12, 0, 0);
+  assert.equal(usageResetLabel((now - 1000) / 1000, now), "reset now");
+  assert.match(usageResetLabel((now + 2.5 * 3_600_000) / 1000, now), /· in 2h 30m$/);
 });

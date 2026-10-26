@@ -8,13 +8,17 @@ export const dynamic = "force-dynamic";
 const MAX_TASK_CHARS = 8000;
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
-/** Run history plus whether the PC runner is online. One Upstash call each, in parallel. */
+/** Run history, whether the PC runner is online, and Claude usage. One Upstash call each, in parallel. */
 export async function GET(req: Request) {
   const caller = await getCaller(req);
   if (!caller) return json({ error: "unauthorized" }, 401);
   const store = getRunStore();
-  const [runs, runner] = await Promise.all([store.listRunsForOwner(caller.id), store.getRunnerStatus()]);
-  return json({ runs, runner: { online: runner.online } });
+  const [runs, runner, usage] = await Promise.all([
+    store.listRunsForOwner(caller.id),
+    store.getRunnerStatus(),
+    store.getUsageLimits(),
+  ]);
+  return json({ runs, runner: { online: runner.online }, usage });
 }
 
 /**

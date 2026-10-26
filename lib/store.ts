@@ -36,6 +36,7 @@ import type {
   RunnerHeartbeat,
   RunnerStatus,
   RunStatus,
+  UsageLimit,
 } from "./types";
 
 export const HEARTBEAT_TTL_SEC = 45;
@@ -46,6 +47,8 @@ export const FILE_TTL_SEC = 24 * 60 * 60;
 const READ_CHUNK_PAGE = 8;
 export const QUEUE_KEY = "runner:queue";
 export const HEARTBEAT_KEY = "runner:heartbeat";
+/** One JSON object { [limitType]: UsageLimit }. Only the single PC runner writes it. */
+export const USAGE_KEY = "runner:usage";
 
 export interface RunStore {
   /** Saves the run. `queue: true` also RPUSHes its id onto runner:queue, in the same call. */
@@ -87,6 +90,10 @@ export interface RunStore {
   heartbeat(hb: RunnerHeartbeat): Promise<void>;
   /** Site: online when the heartbeat key is still alive. */
   getRunnerStatus(): Promise<RunnerStatus>;
+  /** Runner: saves the latest Claude usage for one limit window (five_hour, seven_day, ...). */
+  recordUsageLimit(limit: UsageLimit): Promise<void>;
+  /** Site: the latest Claude usage per limit window, in a stable order. */
+  getUsageLimits(): Promise<UsageLimit[]>;
   /** Site: records a new attachment's metadata and adds it to the run's index. */
   createRunFile(file: RunFile): Promise<void>;
   /** Attachment metadata, or null when missing or expired. Does not check ownership. */
@@ -337,6 +344,19 @@ export function createRunStore(kv: KvBackend): RunStore {
       if (raw === null) return { online: false };
       const hb = JSON.parse(raw) as RunnerHeartbeat;
       return { online: true, runnerId: hb.runnerId, host: hb.host, startedAt: hb.startedAt, lastSeen: hb.ts };
+    },
+
+    async recordUsageLimit(limit) {
+      const raw = await one<string | null>(["GET", USAGE_KEY]);
+      const all = raw ? (JSON.parse(raw) as Record<string, UsageLimit>) : {};
+      all[limit.type] = limit;
+      await one(["SET", USAGE_KEY, JSON.stringify(all)]);
+    },
+
+    async getUsageLimits() {
+      const raw = await one<string | null>(["GET", USAGE_KEY]);
+      if (!raw) return [];
+      return Object.values(JSON.parse(raw) as Record<string, UsageLimit>).sort((a, b) => a.type.localeCompare(b.type));
     },
 
     async createRunFile(file) {
