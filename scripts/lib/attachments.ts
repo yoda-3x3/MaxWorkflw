@@ -1,5 +1,6 @@
 // Run attachments on the PC: safe file names, contained paths, and size-checked reassembly.
 // Pure, so every rule can be tested without touching the disk or Upstash.
+import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
 // Per-file and per-run limit. Matches the upload limit on the site.
@@ -55,15 +56,16 @@ export function assembleBase64(chunks: string[], expectedBytes: number): Buffer 
   return buf
 }
 
-// Chunk size on the site side. Chunk n is this size except the last one.
-export const CHUNK_BYTES = 512 * 1024
 // Chunks fetched per Upstash pipeline call, so one request never carries more than this.
 const READ_BATCH = 64
 
+// The fields of the site's RunFile that the runner reads.
 export interface AttachmentMeta {
   id: string
   name: string
   size: number
+  /** Raw bytes per chunk. Chunk n is this size except the last one. */
+  chunkBytes: number
 }
 
 // Read side of the site's file store. Chunks come back base64, null when missing.
@@ -109,7 +111,8 @@ export async function materializeAttachments(runId: string, runDir: string, deps
     const name = uniqueName(sanitizeFileName(file.name), used)
     used.add(name)
     const path = attachmentPath(runDir, name)
-    const count = Math.ceil(file.size / CHUNK_BYTES)
+    if (!Number.isSafeInteger(file.chunkBytes) || file.chunkBytes <= 0) throw new AttachmentError('attachment chunk size is invalid')
+    const count = Math.ceil(file.size / file.chunkBytes)
     const chunks: string[] = []
     for (let from = 0; from < count; from += READ_BATCH) {
       const indexes = Array.from({ length: Math.min(READ_BATCH, count - from) }, (_, i) => from + i)
@@ -131,4 +134,46 @@ export async function materializeAttachments(runId: string, runDir: string, deps
 export function attachmentNote(paths: string[]): string {
   if (paths.length === 0) return ''
   return ['Files attached to this run (read-only reference, do not modify):', ...paths.map((p) => `- ${p}`)].join('\n')
+}
+
+// Where run folders live. RUNNER_WORK_DIR wins; otherwise %LOCALAPPDATA%\workflwpro\runs.
+export function resolveWorkDir(env: Record<string, string | undefined>, home: string = homedir()): string {
+  if (env.RUNNER_WORK_DIR) return resolve(env.RUNNER_WORK_DIR)
+  return join(env.LOCALAPPDATA || home, 'workflwpro', 'runs')
+}
+
+// Filesystem calls the prepare step needs. Injected so tests run without a disk.
+export interface AttachmentFs {
+  mkdir(dir: string): Promise<void>
+  writeFile(path: string, data: Buffer): Promise<void>
+  /** Names in a folder. An empty list when the folder does not exist. */
+  readdir(dir: string): Promise<string[]>
+}
+
+export interface PreparedAttachments {
+  runDir: string
+  uploadsDir: string
+  /** Absolute paths of every attachment on disk for this run, including ones written by an earlier claim. */
+  paths: string[]
+}
+
+// Downloads the run's attachments that are not yet on disk and lists what is there. Chunks are
+// deleted inside materializeAttachments once everything is written, so a later claim can only find
+// the files on disk, which is why the listing covers them too.
+export async function prepareRunAttachments(
+  runId: string,
+  workDir: string,
+  source: AttachmentSource,
+  fs: AttachmentFs,
+): Promise<PreparedAttachments> {
+  const runDir = runDirFor(workDir, runId)
+  await materializeAttachments(runId, runDir, { source, mkdir: fs.mkdir, writeFile: fs.writeFile })
+  const uploadsDir = uploadsDirFor(runDir)
+  const names = (await fs.readdir(uploadsDir)).sort()
+  return { runDir, uploadsDir, paths: names.map((n) => join(uploadsDir, n)) }
+}
+
+// Run states after which no further step can use the files, so the folder can be removed.
+export function isFinishedStatus(status: string): boolean {
+  return status === 'done' || status === 'failed'
 }
