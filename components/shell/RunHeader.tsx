@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { MAX_AGENTS, type Run } from "../../lib/types";
+import type { RunFileMeta } from "./api";
+import { formatBytes } from "./attachments";
 import {
   agentCountLabel,
   deadlineLabel,
@@ -13,13 +15,14 @@ import {
 
 interface Props {
   run: Run;
+  files?: RunFileMeta[];
   now: number;
   onMerge: () => Promise<void>;
 }
 
 const TERMINAL = new Set(["done", "failed"]);
 
-export function RunHeader({ run, now, onMerge }: Props) {
+export function RunHeader({ run, files, now, onMerge }: Props) {
   const [merging, setMerging] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const prText = prLabel(run.repo, run.prNumber);
@@ -75,6 +78,23 @@ export function RunHeader({ run, now, onMerge }: Props) {
           </div>
         )}
       </dl>
+
+      {files && files.length > 0 && (
+        <section className="attached-files" aria-label="Attached files">
+          <h3>Attached files</h3>
+          <ul>
+            {files.map((f) => (
+              <li key={f.id}>
+                <span className="attachment-name">{f.name}</span>{" "}
+                <span className="muted">
+                  {formatBytes(f.size)}
+                  {!f.complete && " (incomplete)"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {isRunnerStarting(run) && <p className="muted">runner starting...</p>}
 

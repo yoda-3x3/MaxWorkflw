@@ -8,15 +8,18 @@ import { ActivityLog } from "./ActivityLog";
 import { AgentModal } from "./AgentModal";
 import { ApprovalCards } from "./ApprovalCards";
 import { RunHeader } from "./RunHeader";
-import { RunSidebar } from "./RunSidebar";
+import { RunSidebar, type UploadProgress } from "./RunSidebar";
 import { ViewSwitcher } from "./ViewSwitcher";
 import {
   createRun,
   decideApproval,
   errorMessage,
   getRun,
+  listRunFiles,
   listRuns,
   mergeRun,
+  startRun,
+  uploadRunFile,
   usePolling,
 } from "./api";
 import { initialShellState, reduceShell, readStoredView, writeStoredView } from "./shellState";
@@ -26,6 +29,7 @@ export function Shell() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [hydrated, setHydrated] = useState(false);
 
@@ -62,17 +66,41 @@ export function Shell() {
   const run = usePolling(selectedId ? loadRun : null, selectedId, shell.refreshTick);
   const current = run.data;
 
-  async function handleCreate(input: { task: string; repo?: string }) {
+  const loadFiles = useCallback(
+    async () => (await listRunFiles(selectedId ?? "")).files,
+    [selectedId],
+  );
+  const files = usePolling(selectedId ? loadFiles : null, selectedId, shell.refreshTick);
+
+  // Draft -> upload each file (chunked, sequential) -> start. A failure after the draft exists
+  // keeps the draft and selects it, so the owner can see what was saved.
+  async function handleCreate(input: { task: string; repo?: string }, files: File[]) {
     setCreating(true);
     setCreateError(null);
+    const total = files.reduce((sum, f) => sum + f.size, 0);
+    let draftId: string | null = null;
     try {
-      const created = await createRun(input);
-      setSelectedId(created.id);
+      const draft = await createRun(input);
+      draftId = draft.id;
+      let done = 0;
+      setUploadProgress({ done, total });
+      for (const file of files) {
+        await uploadRunFile(draft.id, file, (bytes) => {
+          done += bytes;
+          setUploadProgress({ done, total });
+        });
+      }
+      await startRun(draft.id);
+      setSelectedId(draft.id);
       dispatch({ type: "refresh" });
     } catch (err) {
-      setCreateError(errorMessage(err));
+      if (draftId) setSelectedId(draftId);
+      const note = draftId ? " The run was saved as a draft and not started." : "";
+      setCreateError(`${errorMessage(err)}${note}`);
+      dispatch({ type: "refresh" });
     } finally {
       setCreating(false);
+      setUploadProgress(null);
     }
   }
 
@@ -107,6 +135,7 @@ export function Shell() {
         now={now}
         creating={creating}
         createError={createError}
+        uploadProgress={uploadProgress}
         onSelect={(id) => {
           setSelectedId(id);
           dispatch({ type: "open-detail", agentId: null });
@@ -146,7 +175,7 @@ export function Shell() {
 
         {current && (
           <>
-            <RunHeader run={current} now={now} onMerge={handleMerge} />
+            <RunHeader run={current} files={files.data} now={now} onMerge={handleMerge} />
             <ApprovalCards
               approvals={pendingApprovals}
               agents={current.agents}

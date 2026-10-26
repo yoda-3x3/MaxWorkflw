@@ -97,6 +97,41 @@ h2 {
   margin: 0.4rem 0;
 }
 
+/* Attachments on the New run form and in the run header. */
+.attachment-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0;
+  font-size: 0.85rem;
+}
+
+.attachment-list li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.attachment-name {
+  overflow-wrap: anywhere;
+}
+
+.upload-progress {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.upload-progress progress {
+  width: 100%;
+}
+
+.attached-files ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0;
+  font-size: 0.85rem;
+}
+
 /* Shown when the PC runner has not sent a heartbeat. Full width, above the toolbar. */
 .runner-offline {
   color: var(--warn);
