@@ -1,63 +1,54 @@
-import { test, describe } from "node:test";
+import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { dispatchRun, runAfterResponse } from "@/lib/session";
+import { createSession, SESSION_COOKIE } from "@/lib/auth";
+import { getCaller, readCookie } from "@/lib/session";
 
-function recordingFetch(response: () => Promise<Response>) {
-  const calls: { url: string; init?: RequestInit }[] = [];
-  const fn = (async (input: string | URL | Request, init?: RequestInit) => {
-    calls.push({ url: String(input), init });
-    return response();
-  }) as typeof fetch;
-  return { fn, calls };
-}
+const SECRET = "session-test-secret-".padEnd(40, "x");
+// getCaller checks expiry against the real clock, so tokens are issued now.
+const NOW = Math.floor(Date.now() / 1000);
 
-describe("dispatchRun", () => {
-  test("is a no-op without GITHUB_TOKEN", async () => {
-    const { fn, calls } = recordingFetch(async () => new Response(null, { status: 204 }));
-    await dispatchRun("run-1", { env: {}, fetch: fn });
-    assert.equal(calls.length, 0);
+const savedEnv = { SESSION_SECRET: process.env.SESSION_SECRET, ALLOWED_USERS: process.env.ALLOWED_USERS };
+
+beforeEach(() => {
+  process.env.SESSION_SECRET = SECRET;
+  process.env.ALLOWED_USERS = "bob-gh";
+});
+
+afterEach(() => {
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
+describe("readCookie", () => {
+  test("reads a named cookie and ignores others", () => {
+    const req = new Request("https://x.test/", { headers: { cookie: "a=1; mw_session=abc%2Edef; b=2" } });
+    assert.equal(readCookie(req, "mw_session"), "abc.def");
+    assert.equal(readCookie(req, "missing"), undefined);
   });
 
-  test("never throws when the dispatch request fails", async () => {
-    const { fn } = recordingFetch(async () => {
-      throw new Error("network down");
-    });
-    const saved = console.error;
-    console.error = () => {};
-    try {
-      await assert.doesNotReject(dispatchRun("run-2", { env: { GITHUB_TOKEN: "t" }, fetch: fn }));
-    } finally {
-      console.error = saved;
-    }
-  });
-
-  test("never throws on a non-2xx dispatch response", async () => {
-    const { fn } = recordingFetch(async () => new Response("nope", { status: 422 }));
-    const saved = console.error;
-    console.error = () => {};
-    try {
-      await assert.doesNotReject(dispatchRun("run-3", { env: { GITHUB_TOKEN: "t" }, fetch: fn }));
-    } finally {
-      console.error = saved;
-    }
-  });
-
-  test("sends a workflow dispatch carrying the run id when a token is set", async () => {
-    const { fn, calls } = recordingFetch(async () => new Response(null, { status: 204 }));
-    await dispatchRun("run-4", { env: { GITHUB_TOKEN: "t" }, fetch: fn });
-    assert.equal(calls.length, 1);
-    assert.match(String(calls[0].init?.body ?? ""), /run-4/);
+  test("returns undefined without a cookie header", () => {
+    assert.equal(readCookie(new Request("https://x.test/"), SESSION_COOKIE), undefined);
   });
 });
 
-describe("runAfterResponse", () => {
-  test("runs the task inline outside a request scope", async () => {
-    let ran = false;
-    runAfterResponse(async () => {
-      ran = true;
-    });
-    // The task is started synchronously when after() throws, so it has begun by now.
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(ran, true);
+describe("getCaller", () => {
+  test("returns the owner for a valid session of an allowed user", async () => {
+    const token = await createSession({ method: "github", login: "bob-gh" }, SECRET, NOW);
+    const req = new Request("https://x.test/", { headers: { cookie: `${SESSION_COOKIE}=${token}` } });
+    const caller = await getCaller(req);
+    assert.equal(caller?.id, "github:bob-gh");
+  });
+
+  test("returns null with no cookie", async () => {
+    assert.equal(await getCaller(new Request("https://x.test/")), null);
+  });
+
+  test("returns null once the user is no longer in ALLOWED_USERS", async () => {
+    const token = await createSession({ method: "github", login: "bob-gh" }, SECRET, NOW);
+    process.env.ALLOWED_USERS = "carol-gh";
+    const req = new Request("https://x.test/", { headers: { cookie: `${SESSION_COOKIE}=${token}` } });
+    assert.equal(await getCaller(req), null);
   });
 });

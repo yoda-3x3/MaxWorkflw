@@ -16,7 +16,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
-export function listRuns(): Promise<{ runs: RunIndexEntry[] }> {
+/** `runner.online` is false when the PC runner has not sent a heartbeat recently. */
+export interface RunsResponse {
+  runs: RunIndexEntry[];
+  runner?: { online: boolean };
+}
+
+export function listRuns(): Promise<RunsResponse> {
   return request("/api/runs");
 }
 
@@ -26,10 +32,6 @@ export function getRun(id: string): Promise<Run> {
 
 export function createRun(input: { task: string; repo?: string }): Promise<Run> {
   return request("/api/runs", { method: "POST", body: JSON.stringify(input) });
-}
-
-export function kickRun(id: string): Promise<unknown> {
-  return request(`/api/runs/${encodeURIComponent(id)}/kick`, { method: "POST" });
 }
 
 export function decideApproval(

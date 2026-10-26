@@ -15,7 +15,6 @@ import {
   decideApproval,
   errorMessage,
   getRun,
-  kickRun,
   listRuns,
   mergeRun,
   usePolling,
@@ -51,8 +50,10 @@ export function Shell() {
     dispatch({ type: "gesture", action });
   }, []);
 
-  const loadRuns = useCallback(async () => (await listRuns()).runs, []);
-  const runs = usePolling(loadRuns, "runs", shell.refreshTick);
+  const runsPoll = usePolling(listRuns, "runs", shell.refreshTick);
+  const runs = runsPoll.data?.runs;
+  // Only a reported `online: false` shows the banner; an older API without `runner` shows nothing.
+  const runnerOffline = runsPoll.data?.runner?.online === false;
 
   const loadRun = useCallback(
     () => getRun(selectedId ?? ""),
@@ -60,14 +61,6 @@ export function Shell() {
   );
   const run = usePolling(selectedId ? loadRun : null, selectedId, shell.refreshTick);
   const current = run.data;
-
-  // Opening a run kicks it, in case its cloud driver stalled.
-  useEffect(() => {
-    if (!selectedId) return;
-    kickRun(selectedId).catch(() => {
-      // Harmless: the cron route and the next poll will kick it again.
-    });
-  }, [selectedId]);
 
   async function handleCreate(input: { task: string; repo?: string }) {
     setCreating(true);
@@ -108,8 +101,8 @@ export function Shell() {
     <div className="shell" data-sidebar={shell.sidebarOpen} data-fullscreen={shell.fullscreen}>
       <RunSidebar
         open={shell.sidebarOpen}
-        runs={runs.data}
-        error={runs.error}
+        runs={runs}
+        error={runsPoll.error}
         selectedId={selectedId}
         now={now}
         creating={creating}
@@ -122,6 +115,12 @@ export function Shell() {
       />
 
       <main className="shell-main">
+        {runnerOffline && (
+          <div role="alert" className="runner-offline">
+            <strong>PC runner offline.</strong> Runs stay queued until your PC runner comes back online.
+          </div>
+        )}
+
         <div className="shell-toolbar">
           <span className="brand">WorkflwPro</span>
           <button
