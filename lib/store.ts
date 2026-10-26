@@ -14,6 +14,11 @@
 //   run:<runId>:events     list of RunEvent JSON, RPUSHed by the runner in batches and read by the
 //                          site with LRANGE. Expires PROGRESS_TTL_SEC after the last append.
 //   runner:heartbeat       SET EX HEARTBEAT_TTL_SEC, JSON RunnerHeartbeat. Missing = runner offline.
+//   run:<runId>:files      zset of attachment ids (score = createdAt). All keys below expire FILE_TTL_SEC.
+//   run:<runId>:file:<id>  JSON RunFile metadata.
+//   run:<runId>:file:<id>:<n>  base64 of chunk n (UPLOAD_CHUNK_BYTES raw bytes, last one shorter).
+//
+// Draft runs (status "draft") are never queued and never in active:runs. POST /start queues one.
 //
 // Reads from request handlers are owner-only: routes call getRun(ownerId, runId), which is the
 // only ownership check. The site never writes run state; it enqueues decisions and run ids.
@@ -26,6 +31,7 @@ import type {
   ApprovalDecision,
   Run,
   RunEvent,
+  RunFile,
   RunIndexEntry,
   RunnerHeartbeat,
   RunnerStatus,
@@ -34,6 +40,10 @@ import type {
 
 export const HEARTBEAT_TTL_SEC = 45;
 export const PROGRESS_TTL_SEC = 30 * 24 * 60 * 60;
+/** Attachments and their chunks are kept this long after upload. */
+export const FILE_TTL_SEC = 24 * 60 * 60;
+/** Chunks read per pipeline call, so one response stays a few MB. */
+const READ_CHUNK_PAGE = 8;
 export const QUEUE_KEY = "runner:queue";
 export const HEARTBEAT_KEY = "runner:heartbeat";
 
@@ -77,6 +87,59 @@ export interface RunStore {
   heartbeat(hb: RunnerHeartbeat): Promise<void>;
   /** Site: online when the heartbeat key is still alive. */
   getRunnerStatus(): Promise<RunnerStatus>;
+  /** Site: records a new attachment's metadata and adds it to the run's index. */
+  createRunFile(file: RunFile): Promise<void>;
+  /** Attachment metadata, or null when missing or expired. Does not check ownership. */
+  getRunFile(runId: string, fileId: string): Promise<RunFile | null>;
+  /**
+   * Attachments of a run, oldest first. By default only complete ones (what the runner uses).
+   * `all: true` includes uploads in progress (what the owner's file list shows).
+   */
+  listRunFiles(runId: string, opts?: { all?: boolean }): Promise<RunFile[]>;
+  /** Stores chunk `n` as base64. The route validates size and index. */
+  putFileChunk(runId: string, fileId: string, n: number, base64: string): Promise<void>;
+  /** One chunk as base64, or null when missing. */
+  readFileChunk(runId: string, fileId: string, n: number): Promise<string | null>;
+  /**
+   * Chunks by index, in the order given. Paged internally (READ_CHUNK_PAGE per call) so a
+   * 90 MB file never comes back in one Upstash response. Missing chunks are null.
+   */
+  readFileChunks(runId: string, fileId: string, indexes: number[]): Promise<(string | null)[]>;
+  /**
+   * Checks that all chunks are stored. Returns the number missing (0 = complete), and marks the
+   * file complete when it is 0.
+   */
+  completeRunFile(runId: string, fileId: string): Promise<number>;
+  /** Removes the metadata, every chunk and the index entry. False when the file did not exist. */
+  deleteRunFile(runId: string, fileId: string): Promise<boolean>;
+}
+
+/** Raw bytes to base64, in slices, so large chunks do not overflow the call stack. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+export function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+/**
+ * A safe attachment name, or null. Basename only: path separators, leading dots and control
+ * characters are rejected rather than rewritten, so the name the owner sees is the name stored.
+ */
+export function cleanFileName(name: unknown): string | null {
+  if (typeof name !== "string") return null;
+  const trimmed = name.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$/.test(trimmed)) return null;
+  if (trimmed.includes("..")) return null;
+  return trimmed;
 }
 
 // One Redis command as an array: ["SET", key, value, "NX"]. Numbers are stringified.
@@ -108,9 +171,26 @@ const lockKey = (runId: string) => `lock:run:${runId}`;
 const decisionsKey = (runId: string) => `decisions:${runId}`;
 const claimKey = (runId: string) => `runner:claim:${runId}`;
 const eventsKey = (runId: string) => `run:${runId}:events`;
+const filesKey = (runId: string) => `run:${runId}:files`;
+const fileKey = (runId: string, fileId: string) => `run:${runId}:file:${fileId}`;
+const chunkKey = (runId: string, fileId: string, n: number) => `run:${runId}:file:${fileId}:${n}`;
+const FILE_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+/** Index entries read per list call. Well above MAX_FILES_PER_RUN. */
+const MAX_FILES_PER_LIST = 50;
+
+function assertFileId(fileId: string): void {
+  if (!FILE_ID_RE.test(fileId)) throw new Error("invalid file id");
+}
 
 export function createRunStore(kv: KvBackend): RunStore {
   const one = async <T>(cmd: KvCommand): Promise<T> => (await kv.pipeline([cmd]))[0] as T;
+
+  const validFileIds = (ids: string[] | null | undefined) => (ids ?? []).filter((id) => FILE_ID_RE.test(id));
+
+  async function readFile(runId: string, fileId: string): Promise<RunFile | null> {
+    const raw = await one<string | null>(["GET", fileKey(runId, fileId)]);
+    return raw === null ? null : (JSON.parse(raw) as RunFile);
+  }
 
   // Compare-and-delete through EVAL. Returns true when the key held `value` and was deleted.
   async function delIfEquals(key: string, value: string): Promise<boolean> {
@@ -131,7 +211,7 @@ export function createRunStore(kv: KvBackend): RunStore {
       const cmds: KvCommand[] = [
         ["SET", runKey(run.id), JSON.stringify(run)],
         ["ZADD", userRunsKey(run.ownerId), run.createdAt, run.id],
-        TERMINAL.has(run.status)
+        TERMINAL.has(run.status) || run.status === "draft"
           ? ["ZREM", ACTIVE_RUNS_KEY, run.id]
           : ["ZADD", ACTIVE_RUNS_KEY, run.updatedAt, run.id],
       ];
@@ -258,6 +338,88 @@ export function createRunStore(kv: KvBackend): RunStore {
       const hb = JSON.parse(raw) as RunnerHeartbeat;
       return { online: true, runnerId: hb.runnerId, host: hb.host, startedAt: hb.startedAt, lastSeen: hb.ts };
     },
+
+    async createRunFile(file) {
+      assertRunId(file.runId);
+      assertFileId(file.id);
+      await kv.pipeline([
+        ["SET", fileKey(file.runId, file.id), JSON.stringify(file), "EX", FILE_TTL_SEC],
+        ["ZADD", filesKey(file.runId), file.createdAt, file.id],
+        ["EXPIRE", filesKey(file.runId), FILE_TTL_SEC],
+      ]);
+    },
+
+    async getRunFile(runId, fileId) {
+      assertRunId(runId);
+      assertFileId(fileId);
+      return readFile(runId, fileId);
+    },
+
+    async listRunFiles(runId, opts) {
+      assertRunId(runId);
+      const ids = validFileIds(await one<string[]>(["ZREVRANGE", filesKey(runId), 0, MAX_FILES_PER_LIST - 1]));
+      if (ids.length === 0) return [];
+      const raws = await one<(string | null)[]>(["MGET", ...ids.map((id) => fileKey(runId, id))]);
+      const files: RunFile[] = [];
+      for (const raw of raws) {
+        if (raw === null) continue;
+        const file = JSON.parse(raw) as RunFile;
+        if (opts?.all || file.complete) files.push(file);
+      }
+      // ZREVRANGE gives newest first. The runner and the owner's list both want oldest first.
+      return files.reverse();
+    },
+
+    async putFileChunk(runId, fileId, n, base64) {
+      assertRunId(runId);
+      assertFileId(fileId);
+      await one(["SET", chunkKey(runId, fileId, n), base64, "EX", FILE_TTL_SEC]);
+    },
+
+    async readFileChunk(runId, fileId, n) {
+      assertRunId(runId);
+      assertFileId(fileId);
+      return one<string | null>(["GET", chunkKey(runId, fileId, n)]);
+    },
+
+    async readFileChunks(runId, fileId, indexes) {
+      assertRunId(runId);
+      assertFileId(fileId);
+      const out: (string | null)[] = [];
+      for (let i = 0; i < indexes.length; i += READ_CHUNK_PAGE) {
+        const page = indexes.slice(i, i + READ_CHUNK_PAGE);
+        const got = await one<(string | null)[]>(["MGET", ...page.map((n) => chunkKey(runId, fileId, n))]);
+        out.push(...got);
+      }
+      return out;
+    },
+
+    async completeRunFile(runId, fileId) {
+      assertRunId(runId);
+      assertFileId(fileId);
+      const file = await readFile(runId, fileId);
+      if (!file) throw new Error("file not found");
+      const keys = Array.from({ length: file.chunks }, (_, n) => chunkKey(runId, fileId, n));
+      const present = keys.length === 0 ? 0 : await one<number>(["EXISTS", ...keys]);
+      const missing = file.chunks - present;
+      if (missing === 0) {
+        await one(["SET", fileKey(runId, fileId), JSON.stringify({ ...file, complete: true }), "EX", FILE_TTL_SEC]);
+      }
+      return missing;
+    },
+
+    async deleteRunFile(runId, fileId) {
+      assertRunId(runId);
+      assertFileId(fileId);
+      const file = await readFile(runId, fileId);
+      if (!file) return false;
+      const keys = Array.from({ length: file.chunks }, (_, n) => chunkKey(runId, fileId, n));
+      await kv.pipeline([
+        ["DEL", fileKey(runId, fileId), ...keys],
+        ["ZREM", filesKey(runId), fileId],
+      ]);
+      return true;
+    },
   };
 }
 
@@ -325,6 +487,18 @@ export function createMemoryBackend(now: () => number = Date.now): KvBackend {
         else expires.delete(key);
         return "OK";
       }
+      case "DEL": {
+        let removed = 0;
+        for (const key of args) {
+          if (strings.delete(key)) removed++;
+          if (zsets.delete(key)) removed++;
+          if (lists.delete(key)) removed++;
+          expires.delete(key);
+        }
+        return removed;
+      }
+      case "EXISTS":
+        return args.filter((key) => strings.has(key) || zsets.has(key) || lists.has(key)).length;
       case "EXPIRE": {
         const [key, sec] = args;
         if (!strings.has(key) && !lists.has(key) && !zsets.has(key)) return 0;

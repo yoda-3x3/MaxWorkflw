@@ -6,6 +6,7 @@ import type { Approval, Run } from "@/lib/types";
 import { GET as listRuns, POST as createRunRoute } from "@/app/api/runs/route";
 import { GET as getRun } from "@/app/api/runs/[id]/route";
 import { GET as readEvents } from "@/app/api/runs/[id]/events/route";
+import { POST as startRoute } from "@/app/api/runs/[id]/start/route";
 import { POST as decide } from "@/app/api/runs/[id]/approvals/[approvalId]/route";
 import { POST as merge } from "@/app/api/runs/[id]/merge/route";
 import { GET as runnerStatus } from "@/app/api/runner/status/route";
@@ -134,16 +135,41 @@ describe("run ownership", () => {
 });
 
 describe("starting runs", () => {
-  test("an allowed user's POST saves the run and queues it for the runner", async () => {
+  test("an allowed user's POST creates a draft that is not queued until start", async () => {
     const res = await createRunRoute(req("POST", "https://app.test/api/runs", await aliceCookie(), { task: "  ship it  " }));
     assert.equal(res.status, 201);
     const run = (await res.json()) as Run;
     assert.equal(run.task, "ship it");
     assert.equal(run.ownerId, aliceId);
-    assert.equal(run.status, "queued");
+    assert.equal(run.status, "draft");
+    assert.deepEqual(await getRunStore().popRuns(10), []);
 
+    const started = await startRoute(req("POST", `https://app.test/api/runs/${run.id}/start`, await aliceCookie()), {
+      params: Promise.resolve({ id: run.id }),
+    });
+    assert.equal(started.status, 202);
+    assert.equal(((await started.json()) as Run).status, "queued");
     assert.deepEqual(await getRunStore().popRuns(10), [run.id]);
-    assert.equal((await getRunStore().getRun(aliceId, run.id))?.id, run.id);
+  });
+
+  test("start refuses a run that is already queued", async () => {
+    const runId = await seedRun({ status: "queued" });
+    const res = await startRoute(req("POST", `https://app.test/api/runs/${runId}/start`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 409);
+  });
+
+  test("start refuses while an attachment is still uploading", async () => {
+    const runId = await seedRun({ status: "draft" });
+    await getRunStore().createRunFile({
+      id: "f-1", runId, name: "a.txt", size: 1, chunkBytes: 524288, chunks: 1, complete: false, createdAt: 1,
+    });
+    const res = await startRoute(req("POST", `https://app.test/api/runs/${runId}/start`, await aliceCookie()), {
+      params: Promise.resolve({ id: runId }),
+    });
+    assert.equal(res.status, 409);
+    assert.deepEqual(await getRunStore().popRuns(10), []);
   });
 
   test("a user off the allowlist cannot start a run and nothing is queued", async () => {

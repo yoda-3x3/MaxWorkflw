@@ -20,7 +20,7 @@ export interface ExecResult {
 export type Exec = (args: string[], opts: ExecOptions) => Promise<ExecResult>
 
 export const BRANCH_PREFIX = 'workflwpro/'
-export const COMMIT_AUTHOR = { name: 'WorkflwPro', email: 'noreply@workflwpro.vercel.app' }
+export const COMMIT_AUTHOR = { name: 'WorkflwPro', email: 'workflwpro@users.noreply.github.com' }
 
 // No leading "-" or "." on any part, so nothing can read as a git option.
 const REPO_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/
@@ -139,7 +139,8 @@ export interface Workspace {
 export interface PrepareOptions {
   repo: string
   runId: string
-  token: string
+  /** Optional. Unset means the PC's own git credential helper or gh login is used. */
+  token?: string
   exec: Exec
   /** Parent directory for the clone. Defaults to a fresh mkdtemp under the OS tmpdir. */
   makeTempDir?: () => Promise<string>
@@ -149,7 +150,7 @@ export interface PrepareOptions {
 export async function prepareWorkspace(opts: PrepareOptions): Promise<Workspace> {
   const { owner, name } = parseRepo(opts.repo)
   const branch = workspaceBranch(opts.runId)
-  const secrets = [opts.token, basicAuthHeader(opts.token)]
+  const secrets = opts.token ? [opts.token, basicAuthHeader(opts.token)] : []
   const makeTempDir = opts.makeTempDir ?? (() => mkdtemp(join(tmpdir(), 'workflwpro-')))
   const removeDir = opts.removeDir ?? ((dir: string) => rm(dir, { recursive: true, force: true }))
 
@@ -157,7 +158,8 @@ export async function prepareWorkspace(opts: PrepareOptions): Promise<Workspace>
   const dir = join(root, 'repo')
 
   const git = async (args: string[], cwd: string | undefined, label: string, auth = false): Promise<ExecResult> => {
-    const full = [...GIT_HARDENING, ...(auth ? authConfigArgs(opts.token) : []), ...args]
+    const useToken = auth && opts.token ? authConfigArgs(opts.token) : []
+    const full = [...GIT_HARDENING, ...useToken, ...args]
     const r = await opts.exec(full, { cwd, env: GIT_ENV })
     if (r.code !== 0) {
       const last = r.stderr.trim().split('\n').pop() ?? ''
