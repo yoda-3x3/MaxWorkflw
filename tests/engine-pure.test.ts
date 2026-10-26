@@ -105,7 +105,8 @@ test('caps: an over-budget plan is truncated to MAX_AGENTS including the orchest
 test('caps: a unit that depends on a cut unit is cut too', () => {
   const raw: Plan = {
     summary: 's',
-    units: [unit('a', 13), unit('b'), unit('c', 0, ['b'])] as Plan['units'],
+    // a costs 21 and fits. b costs 10, so 21 + 10 > 29 and b is cut. c depends on b, so it is cut too.
+    units: [unit('a', 20), unit('b', 9), unit('c', 0, ['b'])] as Plan['units'],
   }
   const { plan, cut } = capPlan(raw, MAX_AGENTS)
   assert.deepEqual(
