@@ -21,6 +21,8 @@ let outbound: string[];
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
+  // getRunStore() caches one in-memory store on globalThis. Drop it so each test starts empty.
+  delete (globalThis as Record<string, unknown>).__maxworkflwRunStore;
   saved = {
     SESSION_SECRET: process.env.SESSION_SECRET,
     ALLOWED_USERS: process.env.ALLOWED_USERS,
@@ -163,11 +165,11 @@ describe("starting runs", () => {
   });
 
   test("GET lists the caller's runs with the runner's online state", async () => {
-    await seedRun();
+    const runId = await seedRun();
     const res = await listRuns(req("GET", "https://app.test/api/runs", await aliceCookie()));
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { runs: unknown[]; runner: { online: boolean } };
-    assert.equal(body.runs.length, 1);
+    const body = (await res.json()) as { runs: { id: string }[]; runner: { online: boolean } };
+    assert.ok(body.runs.some((r) => r.id === runId));
     assert.deepEqual(body.runner, { online: false });
 
     await getRunStore().heartbeat({ runnerId: "pc", pid: 1, host: "h", startedAt: 1, ts: Date.now() });

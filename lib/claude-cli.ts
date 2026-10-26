@@ -1,6 +1,6 @@
 // Llm implementation that shells out to the Claude Code CLI (`claude -p`), so calls bill
 // to the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN) instead of the Anthropic API.
-// Node only: runs in the GitHub Actions runner, never in the web app.
+// Node only: runs on the PC runner (scripts/runner.ts), never in the web app or on Workers.
 
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { Approval, CompleteRequest, CompleteResult, Llm, Usage, WorkRequest, WorkResult } from './llm';
