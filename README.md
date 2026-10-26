@@ -4,7 +4,7 @@ WorkflwPro runs a small team of Claude Code agents from a web dashboard. You typ
 
 WorkflwPro is built for one owner. It uses your own Claude subscription through a Claude Code OAuth token, not a per-call API key.
 
-- **Stack:** Next.js 15 (App Router), React 19, TypeScript, hosted on Vercel.
+- **Stack:** Next.js 15 (App Router), React 19, TypeScript, hosted on Cloudflare Workers (via OpenNext) or Vercel.
 - **State and queue:** Upstash Redis over REST.
 - **Agent execution:** GitHub Actions (`.github/workflows/run.yml`) runs `scripts/runner.ts`, which drives `claude -p` (Claude Code).
 - **Sign-in:** GitHub OAuth only. Only accounts in `ALLOWED_USERS` get in.
@@ -122,6 +122,25 @@ Never set `ANTHROPIC_API_KEY` in Vercel or in Actions. Agents must bill through 
 
 Connect the repo to Vercel and deploy. Preview deploys are fine. Production deploys need your approval. Then open the site, sign in with GitHub, and start a run.
 
+#### Cloudflare Workers
+
+The app also builds for Cloudflare Workers with [OpenNext](https://opennext.js.org/cloudflare). The Worker is named `workflwpro`. Its config is `wrangler.jsonc`, and its entry is `worker/index.ts`, which wraps the OpenNext worker and adds the daily cron.
+
+One-time setup (manual, in your Cloudflare account):
+
+1. **API token.** Create a Cloudflare API token with permission to edit Workers scripts for your account. Store it as the GitHub repo secret `CLOUDFLARE_API_TOKEN`, and store your account ID as `CLOUDFLARE_ACCOUNT_ID`. The deploy workflow (`.github/workflows/deploy-cloudflare.yml`) reads both.
+2. **Runtime secrets.** Set every variable in the Vercel table above in Cloudflare, one at a time: `npx wrangler secret put SESSION_SECRET`, and so on. You can also use the dashboard under Workers & Pages → workflwpro → Settings → Variables and Secrets. Non-secret values such as `DISPATCH_REPO` can be plain variables.
+3. **`APP_URL`.** Set it to the public URL, such as `https://workflwpro.<subdomain>.workers.dev` or your custom domain. Update the GitHub OAuth app's homepage and callback URLs to match.
+4. **Deploy.** Every push to `main` runs `npm run typecheck`, `npm test`, and `npm run cf:deploy`. To deploy by hand, run `npm run cf:deploy` after `npx wrangler login` or with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` set.
+
+Local preview: copy `.env.example` to `.dev.vars` and fill it in, then run `npm run cf:preview`. It builds the Worker and starts `wrangler dev`. `.dev.vars` is git-ignored.
+
+Cron on Cloudflare: `wrangler.jsonc` sets the trigger `0 0 * * *`. Each tick, `scheduled()` in `worker/index.ts` sends `GET /api/cron/kick` with `Authorization: Bearer $CRON_SECRET` through the same worker, so the request never leaves Cloudflare. If `CRON_SECRET` is unset, the tick does nothing.
+
+Node-only code: `lib/claude-cli.ts` uses `node:child_process`. Only the GitHub Actions runner (`scripts/`) imports it, so it is not in the Worker bundle. `nodejs_compat` covers the other Node APIs the app uses (`node:crypto`, `Buffer`, `process.env`). `maxDuration` in the route files is a Vercel setting and has no effect on Workers.
+
+If you deploy on both Vercel and Cloudflare, both crons fire. The extra kick only re-dispatches stale runs, but remove one of the two crons if you want a single schedule.
+
 ### Local development
 
 ```bash
@@ -159,7 +178,7 @@ Other scripts:
 
 - **Actions time limits.** The workflow job has `timeout-minutes: 330`. The runner stops starting new steps after about 5 hours, so the last step finishes inside the job limit. Work that does not fit in one job continues in the next dispatch.
 - **Run deadline.** Each run has a 24-hour deadline, counted from creation, whatever the number of dispatches.
-- **Cron is daily on Vercel Hobby.** `vercel.json` schedules `/api/cron/kick` at `0 0 * * *`. That is a backup only. UI opens and approval decisions do most of the work. Pro allows more frequent cron.
+- **Cron is daily.** `vercel.json` (Vercel) and `wrangler.jsonc` (Cloudflare) both schedule `/api/cron/kick` at `0 0 * * *`. That is a backup only. UI opens and approval decisions do most of the work. Vercel Pro allows more frequent cron.
 - **Concurrency is one job per run.** A second dispatch for the same run waits for the first.
 - **GitHub rate limits and Claude subscription limits** apply. A run that hits a limit retries later, or fails and reports the error.
 
@@ -194,7 +213,11 @@ All routes require a signed session, except `/api/auth/*`. The cron route accept
 - `scripts/runner.ts`: entry point for GitHub Actions. Advances one run.
 - `scripts/lib/`: env checks, git workspace handling, loop, and log redaction
 - `.github/workflows/run.yml`: the Actions workflow that runs the runner
-- `vercel.json`: cron schedule and function durations
+- `vercel.json`: cron schedule and function durations (Vercel)
+- `wrangler.jsonc`: Cloudflare Worker config, assets, and cron trigger
+- `open-next.config.ts`: OpenNext build config for Cloudflare
+- `worker/index.ts`: Cloudflare Worker entry. Wraps the OpenNext worker and adds `scheduled()`. `worker/cron.ts` holds the kick logic.
+- `.github/workflows/deploy-cloudflare.yml`: deploys to Cloudflare on push to `main`
 - `ORCHESTRATOR_PROMPT.md`: the Orchestrator's system prompt reference
 
 ## Gestures and camera mode

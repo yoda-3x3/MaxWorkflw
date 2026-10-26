@@ -1,0 +1,23 @@
+{
+  // Cloudflare Workers config for the OpenNext build. Build with `npm run cf:build`.
+  // Secrets (SESSION_SECRET, CRON_SECRET, GITHUB_*, UPSTASH_*, APP_URL, ...) are set with
+  // `wrangler secret put <NAME>` or in the dashboard. See README "Cloudflare".
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "workflwpro",
+  // Custom entry: re-exports the OpenNext worker and adds a scheduled() handler for the kick cron.
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  // nodejs_compat: Buffer, node:crypto, and process.env (populated from bindings and secrets).
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+  // Daily backup kick, same schedule as vercel.json. Calls /api/cron/kick with CRON_SECRET.
+  "triggers": {
+    "crons": ["0 0 * * *"],
+  },
+  "observability": {
+    "enabled": true,
+  },
+}

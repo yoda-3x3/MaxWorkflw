@@ -14,3 +14,8 @@ node_modules/
 
 # attachments shared with the team (never committed)
 .wdash/attachments/
+
+# OpenNext / Cloudflare build output and local Wrangler state. Local secrets for `wrangler dev`.
+.open-next/
+.wrangler/
+.dev.vars
