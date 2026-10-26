@@ -55,7 +55,7 @@ export interface EngineDeps {
 export interface StepResult {
   runId: string
   action: 'planned' | 'replan' | 'wave' | 'waiting' | 'finalized' | 'failed' | 'idle' | 'locked'
-  // True when another step should run now. The UI or cron re-kicks after `waiting`.
+  // True when the runner should call step again for this run now. False after waiting, idle or finalized.
   more: boolean
 }
 
@@ -591,10 +591,4 @@ export async function step(runId: string, overrides: Partial<EngineDeps> = {}): 
   } finally {
     await deps.store.releaseRunLock(runId, token)
   }
-}
-
-// Route-facing form. POST /api/runs/:id/step and the kick routes only need `more`.
-export async function runStep(runId: string, overrides: Partial<EngineDeps> = {}): Promise<{ more: boolean }> {
-  const r = await step(runId, overrides)
-  return { more: r.more }
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { dispatchRun, getCaller, json, runAfterResponse } from "@/lib/session";
+import { getCaller, json } from "@/lib/session";
 import { getRunStore } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -10,8 +10,8 @@ type Ctx = { params: Promise<{ id: string; approvalId: string }> };
 const MAX_NOTE_CHARS = 2000;
 
 /**
- * Records the owner's decision in the decision queue. The step engine applies it, so this
- * route never writes run state directly and cannot race a running step.
+ * Records the owner's decision and wakes the runner, in one Upstash call. The engine applies the
+ * decision on the runner's next step, so this route never writes run state directly.
  */
 export async function POST(req: Request, { params }: Ctx) {
   const caller = await getCaller(req);
@@ -32,7 +32,7 @@ export async function POST(req: Request, { params }: Ctx) {
   if (!approval) return json({ error: "not found" }, 404);
   if (approval.status !== "pending") return json({ error: "approval already decided" }, 409);
 
-  await store.enqueueDecision(run.id, {
+  await store.queueDecision(run.id, {
     id: randomUUID(),
     runId: run.id,
     approvalId,
@@ -40,6 +40,5 @@ export async function POST(req: Request, { params }: Ctx) {
     note: note || undefined,
     decidedAt: Date.now(),
   });
-  runAfterResponse(() => dispatchRun(run.id));
   return json({ queued: true }, 202);
 }
