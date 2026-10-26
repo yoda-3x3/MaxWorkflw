@@ -53,13 +53,17 @@ npx wrangler secret put UPSTASH_REDIS_REST_URL
 npx wrangler secret put UPSTASH_REDIS_REST_TOKEN
 ```
 
-`GITHUB_TOKEN` is only needed if the site code calls the GitHub API. Check `.env.example` for the current list. The list is provisional until the backend and auth work is merged.
+```bash
+npx wrangler secret put GITHUB_TOKEN            # used by the merge route
+```
+
+`.env.example` lists every name, with the Worker vars and secrets separated.
 
 For local development, copy `.env.example` to `.dev.vars` and fill it in. `.dev.vars` is git-ignored. `CLAUDE_CODE_OAUTH_TOKEN` is never a Worker secret.
 
 ### 2. PC runner (`runner.env`)
 
-The runner reads its own env file from the repo root: `runner.env`. It is git-ignored and must never be committed. Copy the runner block from `.env.example`:
+The runner reads its env from `scripts/.env` or `runner.env` in the repo root. Both are git-ignored and must never be committed. Process env wins over both files. Copy the runner block from `.env.example`:
 
 ```
 CLAUDE_CODE_OAUTH_TOKEN=     # from `claude setup-token`
@@ -71,18 +75,16 @@ The runner uses the PC's own `git` and `gh` credentials to reach GitHub, so no G
 
 ### 3. Scheduled task (Windows)
 
-`scripts/install-runner-task.ps1` registers the runner as a Windows scheduled task. Run it from PowerShell in the repo root:
+`scripts/install-runner-task.ps1` registers the runner as a hidden Windows scheduled task named `WorkflwProRunner`. It starts at logon, restarts on failure, and runs `npx tsx scripts/runner.ts` in the repo. Run it from PowerShell in the repo root:
 
 ```powershell
-.\scripts\install-runner-task.ps1 -Install     # register the task
-.\scripts\install-runner-task.ps1 -Start       # start it now
-.\scripts\install-runner-task.ps1 -Stop        # stop it
-.\scripts\install-runner-task.ps1 -Uninstall   # remove the task
+.\scripts\install-runner-task.ps1               # install (or update) and start the task
+.\scripts\install-runner-task.ps1 -Start        # start it now
+.\scripts\install-runner-task.ps1 -Stop         # stop it (it restarts at next logon)
+.\scripts\install-runner-task.ps1 -Uninstall    # stop and remove the task
 ```
 
-Check the script's own help for the exact parameter names and the schedule it installs. The task only runs while the PC is on and logged in.
-
-> Verify the switches against `scripts/install-runner-task.ps1` once the runner work is merged. The names above are what that script is planned to expose.
+The task only runs while the PC is on and you are logged in. The install step warns if neither env file exists.
 
 ### HandCam (MediaPipe)
 
