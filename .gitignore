@@ -4,10 +4,23 @@ node_modules/
 # next.js build output
 .next/
 
+# OpenNext / Cloudflare build output and local dry-run bundles
+.open-next/
+.wrangler/
+.wrangler-dry/
+
 # env files: never commit secrets
 .env
 .env.*
 !.env.example
+
+# local Worker secrets (wrangler dev)
+.dev.vars
+.dev.vars.*
+
+# runner (PC scheduled task) secrets. Holds CLAUDE_CODE_OAUTH_TOKEN and the Upstash credentials.
+runner.env
+scripts/.env
 
 # typescript
 *.tsbuildinfo

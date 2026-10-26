@@ -1,0 +1,21 @@
+{
+  // Cloudflare Workers config for WorkflwPro (OpenNext). Build with `npm run cf:build`.
+  // Secrets are not stored here. Set them with `wrangler secret put <NAME>`. See README.md.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "workflwpro",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "APP_ORIGIN": "https://workflwpro.flitetest-bhs.workers.dev",
+    "ALLOWED_USERS": "yoda-3x3",
+    "TICKER_SYMBOLS": "AAPL,TSLA,PLTR,GLD"
+  }
+}
