@@ -30,10 +30,13 @@ import {
   appendEvents,
   claimRun,
   createUpstashClient,
+  PING_PREFIX,
   popQueue,
   refreshClaim,
   requeueRun,
   releaseClaim,
+  writePong,
+  type QueueName,
   type UpstashClient,
 } from './lib/upstash'
 
@@ -44,6 +47,10 @@ const STEP_GAP_MS = 2_000
 const CLAIM_TTL_SEC = 120
 const CLAIM_REFRESH_MS = 30_000
 const SHUTDOWN_GRACE_MS = 3_000
+// --cloud: the GitHub Actions runner. Reads the cloud queue, sends no PC heartbeat, and exits once
+// the queue is empty (the site starts a new one when it queues more work).
+const CLOUD = process.argv.includes('--cloud')
+const QUEUE: QueueName = CLOUD ? 'cloud' : 'pc'
 
 const secrets: string[] = []
 let stopping = false
@@ -171,7 +178,7 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
     })
     log(`run ${runId} stopped: ${result.stoppedBy}, steps ${result.steps}, last ${result.lastAction ?? 'none'}`)
     // Shutdown stopped it with work left. Put it back so the next runner picks it up.
-    if (result.stoppedBy === 'stopped') await requeueRun(c, runId)
+    if (result.stoppedBy === 'stopped') await requeueRun(c, runId, QUEUE)
 
     if (workspace) {
       const { pushed } = await workspace.finish()
@@ -193,8 +200,16 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
 
 // One pass of the queue loop: returns how long to wait before the next pass.
 async function pollOnce(c: UpstashClient, models: ReturnType<typeof resolveModels>): Promise<number> {
-  const [runId] = await popQueue(c, 1)
+  const [runId] = await popQueue(c, 1, QUEUE)
   if (!runId) return IDLE_POLL_MS
+  if (runId.startsWith(PING_PREFIX)) {
+    const nonce = runId.slice(PING_PREFIX.length)
+    if (/^[A-Za-z0-9-]{8,64}$/.test(nonce)) {
+      await writePong(c, nonce, hostname(), runnerId)
+      log('answered a ping')
+    }
+    return ACTIVE_POLL_MS
+  }
   if (!validRunId(runId)) {
     log(`skipped queue entry with invalid run id`)
     return ACTIVE_POLL_MS
@@ -233,12 +248,17 @@ async function main(): Promise<number> {
   runnerId = `${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`
   const models = resolveModels(process.env, true)
 
-  const hb: Heartbeat = startHeartbeat({
-    client,
-    info: { runnerId, pid: process.pid, host: hostname(), startedAt: Date.now() },
-    onError: (err) => log(`heartbeat failed: ${err instanceof Error ? err.message : String(err)}`),
-  })
-  log(`runner ${runnerId} up; polling every ${IDLE_POLL_MS / 1000} s idle, ${ACTIVE_POLL_MS / 1000} s active (heartbeat ${HEARTBEAT_INTERVAL_MS / 1000} s)`)
+  // The heartbeat means "the PC is online"; the cloud runner must not claim that.
+  const hb: Heartbeat = CLOUD
+    ? { stop: async () => {} }
+    : startHeartbeat({
+        client,
+        info: { runnerId, pid: process.pid, host: hostname(), startedAt: Date.now() },
+        onError: (err) => log(`heartbeat failed: ${err instanceof Error ? err.message : String(err)}`),
+      })
+  log(CLOUD
+    ? `cloud runner ${runnerId} up; working the cloud queue until it is empty`
+    : `runner ${runnerId} up; polling every ${IDLE_POLL_MS / 1000} s idle, ${ACTIVE_POLL_MS / 1000} s active (heartbeat ${HEARTBEAT_INTERVAL_MS / 1000} s)`)
 
   const onSignal = (sig: string) => {
     if (stopping) return
@@ -258,6 +278,8 @@ async function main(): Promise<number> {
         log(`poll failed: ${err instanceof Error ? err.message : String(err)}`)
         wait = IDLE_POLL_MS
       }
+      // An empty cloud queue means this Actions job is done.
+      if (CLOUD && wait === IDLE_POLL_MS) break
       if (!stopping) await pause(wait)
     }
   } finally {

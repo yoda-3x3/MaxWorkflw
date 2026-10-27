@@ -7,7 +7,7 @@
 // The GitHub dependency only opens PRs, so the engine cannot merge.
 
 import { AGENT_MAX_ATTEMPTS, AGENT_STALL_MS, MAX_AGENTS, RUN_DEADLINE_MS } from './types'
-import type { Agent, ApprovalDecision, ApprovalKind, Plan, Run } from './types'
+import type { Agent, ApprovalDecision, ApprovalKind, Plan, Run, RunOptions } from './types'
 import { resolveModels, type Llm, type Models } from './llm'
 import {
   HARD_STOP_RULES,
@@ -94,7 +94,7 @@ export async function createRun(
   return run
 }
 
-export function buildRun(args: { ownerId: string; task: string; repo?: string; now?: number; id?: string; draft?: boolean }): Run {
+export function buildRun(args: { ownerId: string; task: string; repo?: string; options?: RunOptions; now?: number; id?: string; draft?: boolean }): Run {
   const now = args.now ?? Date.now()
   const id = args.id ?? crypto.randomUUID()
   return {
@@ -102,6 +102,7 @@ export function buildRun(args: { ownerId: string; task: string; repo?: string; n
     ownerId: args.ownerId,
     task: args.task,
     repo: args.repo,
+    ...(args.options ? { options: args.options } : {}),
     status: args.draft ? 'draft' : 'queued',
     tokens: 0,
     agents: [
@@ -355,6 +356,26 @@ function failRun(run: Run, reason: string, deps: EngineDeps, now: number): Promi
   return save(run, deps, now).then(() => ({ runId: run.id, action: 'failed' as const, more: false }))
 }
 
+/** The run's agent cap: its Advanced option, clamped to 2..MAX_AGENTS. */
+export function runAgentCap(run: Run): number {
+  const n = run.options?.maxAgents
+  return typeof n === 'number' && Number.isFinite(n) ? Math.min(MAX_AGENTS, Math.max(2, Math.floor(n))) : MAX_AGENTS
+}
+
+/** Applies the run's per-tier model overrides on top of the runner's defaults. */
+export function withRunModels(deps: EngineDeps, run: Run): EngineDeps {
+  const m = run.options?.models
+  if (!m || (!m.orchestrator && !m.lead && !m.worker)) return deps
+  return {
+    ...deps,
+    models: {
+      orchestrator: m.orchestrator || deps.models.orchestrator,
+      lead: m.lead || deps.models.lead,
+      worker: m.worker || deps.models.worker,
+    },
+  }
+}
+
 async function planStep(run: Run, deps: EngineDeps, now: number): Promise<StepResult> {
   const orch = run.agents.find((a) => a.role === 'orchestrator')!
   orch.status = 'running'
@@ -366,12 +387,15 @@ async function planStep(run: Run, deps: EngineDeps, now: number): Promise<StepRe
   try {
     const res = await deps.llm.complete({
       model: deps.models.orchestrator,
-      system: plannerSystemPrompt(),
+      system: plannerSystemPrompt({ maxAgents: runAgentCap(run), shape: run.options?.shape }),
       prompt: plannerUserPrompt(run.task, run.repo ? { repo: run.repo } : undefined),
       maxTokens: PLAN_MAX_TOKENS,
     })
     addUsage(run, orch, res.usage.input, res.usage.output)
-    const { plan, cut } = capPlan(parsePlan(res.text), MAX_AGENTS)
+    const parsed = parsePlan(res.text)
+    // A flat team never gets leads, whatever the model returned.
+    if (run.options?.shape === 'flat') for (const u of parsed.units) delete u.workers
+    const { plan, cut } = capPlan(parsed, runAgentCap(run))
     if (plan.units.length === 0) throw new Error('no units fit the agent cap')
     for (const id of cut) addEvent(run, `${CUT_EVENT}${id}`, now, orch.id)
     run.plan = plan
@@ -522,6 +546,7 @@ async function drive(runId: string, deps: EngineDeps, taken: ApprovalDecision[])
   const run = await deps.store.getRunForEngine(runId)
   if (!run) throw new Error(`run ${runId} not found`)
   if (run.status === 'done' || run.status === 'failed') return { runId, action: 'idle', more: false }
+  deps = withRunModels(deps, run)
 
   const now = deps.now()
   const decisions = await deps.store.drainDecisions(runId)

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { dispatchCloudRunner } from "@/lib/cloud";
 import { getCaller, json } from "@/lib/session";
 import { getRunStore } from "@/lib/store";
 
@@ -39,6 +40,11 @@ export async function POST(req: Request, { params }: Ctx) {
     decision: body.decision === "approve" ? "approved" : "denied",
     note: note || undefined,
     decidedAt: Date.now(),
-  });
+  }, run.placement);
+  // A cloud runner exits once its queue is empty (e.g. while this approval was pending): start one.
+  if (run.placement === "cloud") {
+    const started = await dispatchCloudRunner();
+    if (!started.ok) return json({ queued: true, cloudError: started.error }, 202);
+  }
   return json({ queued: true }, 202);
 }

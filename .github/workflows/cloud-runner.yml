@@ -1,0 +1,53 @@
+# WorkflwPro cloud runner. The site starts this (workflow_dispatch) when a run is placed on the
+# cloud: when "Run on" is Cloud, or Auto while the PC runner is offline. It works the cloud queue
+# (runner:queue:cloud) with Claude Code on the owner's subscription, then exits when the queue is
+# empty. The repo is public, so these minutes are free.
+#
+# Repo secrets: CLAUDE_CODE_OAUTH_TOKEN, UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, and
+# RUNNER_GH_TOKEN (a token with Contents read/write on the repos runs work in, for repo mode).
+name: Cloud runner
+
+on:
+  workflow_dispatch:
+
+# One runner at a time drains the queue. A dispatch while one is running waits its turn, so work
+# queued just as the running job exits is still picked up.
+concurrency:
+  group: cloud-runner
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # GitHub's limit for hosted runners is 6 h. A run still going then is requeued on shutdown.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Git identity
+        run: |
+          git config --global user.name "${{ github.repository_owner }}"
+          # The owner's own noreply address, so commits are credited to the account.
+          git config --global user.email "${{ github.repository_owner_id }}+${{ github.repository_owner }}@users.noreply.github.com"
+
+      - name: Work the cloud queue
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          # `gh auth token` returns this, which is how repo mode gets its GitHub token.
+          GH_TOKEN: ${{ secrets.RUNNER_GH_TOKEN }}
+          RUNNER_WORK_DIR: ${{ runner.temp }}/workflwpro
+        run: npx tsx scripts/runner.ts --cloud

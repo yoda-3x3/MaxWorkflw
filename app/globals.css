@@ -10,7 +10,128 @@
   --warn: #facc15;
   --bad: #f87171;
   --running: #60a5fa;
+  --glow: none;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
+}
+
+/* ---- Themes (lib/theme.ts; same palettes as wdash's moods). No data-theme = Classic. ---- */
+
+html[data-theme="hacker"] {
+  --bg: #050805;
+  --panel: #0a120a;
+  --panel-2: #0f1a0f;
+  --border: #1d3a1d;
+  --text: #b7f7b7;
+  --muted: #5fae6a;
+  --accent: #39ff6a;
+  --ok: #39ff6a;
+  --warn: #e6ff4d;
+  --bad: #ff4d6d;
+  --running: #4dd8ff;
+  --glow: 0 0 6px rgb(57 255 106 / 0.55);
+}
+
+html[data-theme="defcon"] {
+  --bg: #0a0000;
+  --panel: #140304;
+  --panel-2: #1f0507;
+  --border: #4a0d12;
+  --text: #ffd6d6;
+  --muted: #c2585e;
+  --accent: #ff1f2d;
+  --ok: #ff8a8a;
+  --warn: #ffb020;
+  --bad: #ff1f2d;
+  --running: #ff6b6b;
+  --glow: 0 0 7px rgb(255 31 45 / 0.6);
+}
+
+html[data-theme="cyberpunk"] {
+  --bg: #0d0221;
+  --panel: #160530;
+  --panel-2: #200a40;
+  --border: #3b1466;
+  --text: #f5e6ff;
+  --muted: #a98bd1;
+  --accent: #ff2a6d;
+  --ok: #05ffa1;
+  --warn: #f9f871;
+  --bad: #ff2a6d;
+  --running: #01cdfe;
+  --glow: 0 0 8px rgb(1 205 254 / 0.5);
+}
+
+html[data-theme="amber"] {
+  --bg: #0b0700;
+  --panel: #140d02;
+  --panel-2: #1d1404;
+  --border: #3a2808;
+  --text: #ffcc66;
+  --muted: #b38636;
+  --accent: #ffb000;
+  --ok: #ffd166;
+  --warn: #ff9f1c;
+  --bad: #ff5e3a;
+  --running: #ffcf70;
+  --glow: 0 0 6px rgb(255 176 0 / 0.5);
+}
+
+html[data-theme="midnight"] {
+  --bg: #0b1020;
+  --panel: #121a30;
+  --panel-2: #18223d;
+  --border: #26335a;
+  --text: #dbe4ff;
+  --muted: #8d9bc4;
+  --accent: #7aa2ff;
+  --ok: #5eead4;
+  --warn: #fcd34d;
+  --bad: #fb7185;
+  --running: #93c5fd;
+}
+
+/* Terminal themes: monospace everywhere and glowing headings. */
+html:is([data-theme="hacker"], [data-theme="defcon"], [data-theme="amber"]) body {
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+
+html[data-theme] :is(h1, .brand) {
+  text-shadow: var(--glow);
+}
+
+/* CRT scanlines (purely visual; clicks pass through). */
+html:is([data-theme="hacker"], [data-theme="defcon"], [data-theme="amber"]) body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background: repeating-linear-gradient(to bottom, rgb(0 0 0 / 0) 0 2px, rgb(0 0 0 / 0.18) 2px 3px);
+}
+
+/* DEFCON: a slow red-alert pulse around the screen edge. */
+html[data-theme="defcon"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  pointer-events: none;
+  box-shadow: inset 0 0 60px 6px rgb(255 31 45 / 0.35);
+  animation: defcon-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes defcon-pulse {
+  50% {
+    box-shadow: inset 0 0 90px 14px rgb(255 31 45 / 0.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="defcon"] body::before {
+    animation: none;
+  }
 }
 
 * {
@@ -30,6 +151,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
   color: inherit;
@@ -62,6 +184,7 @@ button.danger {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   background: var(--bg);
@@ -213,6 +336,7 @@ h2 {
 }
 
 .new-run label input,
+.new-run label select,
 .new-run label textarea {
   margin-top: 0.25rem;
   display: block;
@@ -226,6 +350,85 @@ h2 {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+/* PC runner status + Ping. */
+.runner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.6rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.85rem;
+}
+
+.runner-status::before {
+  content: "";
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.runner-status[data-online="true"]::before {
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+
+.runner-status[data-online="false"]::before {
+  background: var(--bad);
+}
+
+.runner button {
+  min-height: 1.9rem;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+.runner-ping {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+}
+
+.runner-ping:empty {
+  display: none;
+}
+
+/* Advanced options on the New run form. */
+.advanced {
+  margin: 0.2rem 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-height: 1.8rem;
+  display: flex;
+  align-items: center;
+}
+
+.advanced[open] summary {
+  color: var(--text);
+  margin-bottom: 0.4rem;
+}
+
+.theme-picker {
+  display: block;
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.theme-picker select {
+  margin-top: 0.3rem;
 }
 
 /* Claude subscription usage (5-hour / 7-day windows), filled in by the PC runner. */

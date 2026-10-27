@@ -1,4 +1,5 @@
 import { buildRun } from "@/lib/engine";
+import { parseRunOptions } from "@/lib/runOptions";
 import { getCaller, json } from "@/lib/session";
 import { getRunStore } from "@/lib/store";
 
@@ -29,7 +30,7 @@ export async function POST(req: Request) {
   const caller = await getCaller(req);
   if (!caller) return json({ error: "unauthorized" }, 401);
 
-  const body = (await req.json().catch(() => null)) as { task?: unknown; repo?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { task?: unknown; repo?: unknown; options?: unknown } | null;
   const task = typeof body?.task === "string" ? body.task.trim() : "";
   if (!task) return json({ error: "task is required" }, 400);
   if (task.length > MAX_TASK_CHARS) {
@@ -44,7 +45,10 @@ export async function POST(req: Request) {
     repo = body.repo;
   }
 
-  const run = buildRun({ ownerId: caller.id, task, repo, draft: true });
+  const parsed = parseRunOptions(body?.options);
+  if ("error" in parsed) return json({ error: parsed.error }, 400);
+
+  const run = buildRun({ ownerId: caller.id, task, repo, options: parsed.options, draft: true });
   await getRunStore().saveRun(run);
   return json(run, 201);
 }

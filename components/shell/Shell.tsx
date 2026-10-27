@@ -21,6 +21,7 @@ import {
   startRun,
   uploadRunFile,
   usePolling,
+  type NewRunInput,
 } from "./api";
 import { initialShellState, reduceShell, readStoredView, writeStoredView } from "./shellState";
 
@@ -74,7 +75,7 @@ export function Shell() {
 
   // Draft -> upload each file (chunked, sequential) -> start. A failure after the draft exists
   // keeps the draft and selects it, so the owner can see what was saved.
-  async function handleCreate(input: { task: string; repo?: string }, files: File[]) {
+  async function handleCreate(input: NewRunInput, files: File[]) {
     setCreating(true);
     setCreateError(null);
     const total = files.reduce((sum, f) => sum + f.size, 0);
@@ -90,7 +91,8 @@ export function Shell() {
           setUploadProgress({ done, total });
         });
       }
-      await startRun(draft.id);
+      const started = await startRun(draft.id);
+      if (started.cloudError) setCreateError(`Queued for the cloud, but: ${started.cloudError}`);
       setSelectedId(draft.id);
       dispatch({ type: "refresh" });
     } catch (err) {
@@ -138,6 +140,7 @@ export function Shell() {
         open={shell.sidebarOpen}
         runs={runs}
         usage={runsPoll.data?.usage}
+        runnerOnline={runsPoll.data?.runner?.online}
         error={runsPoll.error}
         selectedId={selectedId}
         now={now}
@@ -154,7 +157,7 @@ export function Shell() {
       <main className="shell-main">
         {runnerOffline && (
           <div role="alert" className="runner-offline">
-            <strong>PC runner offline.</strong> Runs stay queued until your PC runner comes back online.
+            <strong>PC runner offline.</strong> New runs on Auto go to the cloud runner; runs set to PC wait for it.
           </div>
         )}
 

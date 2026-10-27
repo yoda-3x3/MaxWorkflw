@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, type ChangeEvent, type FormEvent } from "react";
-import type { RunIndexEntry, UsageLimit } from "../../lib/types";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { MAX_AGENTS, MODEL_CHOICES, type RunIndexEntry, type RunOn, type RunOptions, type TeamShape, type UsageLimit } from "../../lib/types";
+import { THEMES, applyTheme, currentTheme, isTheme, type Theme } from "../../lib/theme";
+import { errorMessage, getPong, pingRunner, type NewRunInput } from "./api";
 import { checkUploadSize, formatBytes } from "./attachments";
 import { statusLabel, timeAgo, usageLabel, usagePercent, usageResetLabel } from "./format";
 
@@ -16,6 +18,8 @@ interface Props {
   runs: RunIndexEntry[] | undefined;
   /** Claude subscription usage per limit window; empty until the runner has made a call. */
   usage: UsageLimit[] | undefined;
+  /** From the runner heartbeat; undefined until the first poll returns. */
+  runnerOnline: boolean | undefined;
   error: string | null;
   selectedId: string | null;
   now: number;
@@ -23,7 +27,7 @@ interface Props {
   createError: string | null;
   uploadProgress: UploadProgress | null;
   onSelect: (id: string) => void;
-  onCreate: (input: { task: string; repo?: string }, files: File[]) => void;
+  onCreate: (input: NewRunInput, files: File[]) => void;
 }
 
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -32,6 +36,7 @@ export function RunSidebar({
   open,
   runs,
   usage,
+  runnerOnline,
   error,
   selectedId,
   now,
@@ -45,6 +50,10 @@ export function RunSidebar({
   const [repo, setRepo] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [runOn, setRunOn] = useState<RunOn>("auto");
+  const [shape, setShape] = useState<TeamShape>("auto");
+  const [maxAgents, setMaxAgents] = useState("");
+  const [models, setModels] = useState<Record<"orchestrator" | "lead" | "worker", string>>({ orchestrator: "", lead: "", worker: "" });
 
   const sizeCheck = checkUploadSize(files);
   const sizeError = sizeCheck.ok ? null : sizeCheck.error;
@@ -70,9 +79,20 @@ export function RunSidebar({
     setRepoError(null);
     const trimmedTask = task.trim();
     if (!trimmedTask || sizeError) return;
-    onCreate({ task: trimmedTask, repo: trimmedRepo || undefined }, files);
+    onCreate({ task: trimmedTask, repo: trimmedRepo || undefined, options: buildOptions() }, files);
     setTask("");
     setFiles([]);
+  }
+
+  // Only what differs from the defaults goes to the server.
+  function buildOptions(): RunOptions | undefined {
+    const o: RunOptions = {};
+    if (runOn !== "auto") o.runOn = runOn;
+    if (shape !== "auto") o.shape = shape;
+    if (maxAgents.trim()) o.maxAgents = Number(maxAgents);
+    const m = Object.fromEntries(Object.entries(models).filter(([, v]) => v)) as RunOptions["models"];
+    if (m && Object.keys(m).length) o.models = m;
+    return Object.keys(o).length ? o : undefined;
   }
 
   const pct = uploadProgress && uploadProgress.total > 0
@@ -82,6 +102,8 @@ export function RunSidebar({
   return (
     <aside className="sidebar" data-open={open} data-no-gesture aria-label="Runs">
       <div className="brand">WorkflwPro</div>
+
+      <RunnerPing online={runnerOnline} />
 
       <section className="usage" aria-label="Claude usage">
         <h2>Claude usage</h2>
@@ -151,6 +173,49 @@ export function RunSidebar({
             ))}
           </ul>
         )}
+        <details className="advanced">
+          <summary>Advanced options</summary>
+          <label>
+            Run on
+            <select value={runOn} onChange={(e) => setRunOn(e.target.value as RunOn)}>
+              <option value="auto">Auto (PC if online, else cloud)</option>
+              <option value="pc">My PC</option>
+              <option value="cloud">Cloud (GitHub Actions)</option>
+            </select>
+          </label>
+          <label>
+            Team shape
+            <select value={shape} onChange={(e) => setShape(e.target.value as TeamShape)}>
+              <option value="auto">Auto (Orchestrator decides)</option>
+              <option value="three-tier">3 tiers: Orchestrator → Leads → Workers</option>
+              <option value="flat">Flat: Orchestrator → Agents</option>
+            </select>
+          </label>
+          <label>
+            Max agents (2–{MAX_AGENTS})
+            <input
+              type="number"
+              min={2}
+              max={MAX_AGENTS}
+              value={maxAgents}
+              onChange={(e) => setMaxAgents(e.target.value)}
+              placeholder={String(MAX_AGENTS)}
+            />
+          </label>
+          {(["orchestrator", "lead", "worker"] as const).map((role) => (
+            <label key={role}>
+              {role === "orchestrator" ? "Orchestrator" : role === "lead" ? "Lead" : "Worker"} model
+              <select value={models[role]} onChange={(e) => setModels((prev) => ({ ...prev, [role]: e.target.value }))}>
+                <option value="">Default</option>
+                {MODEL_CHOICES.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </details>
         {sizeError && <p className="form-error">{sizeError}</p>}
         {repoError && <p className="form-error">{repoError}</p>}
         {createError && <p className="form-error">{createError}</p>}
@@ -192,6 +257,83 @@ export function RunSidebar({
           ))}
         </ul>
       </section>
+
+      <ThemePicker />
     </aside>
+  );
+}
+
+const PING_TIMEOUT_MS = 45_000;
+const PING_POLL_MS = 2_000;
+
+/** PC runner status and a Ping button that waits for the runner to answer through its queue. */
+function RunnerPing({ online }: { online: boolean | undefined }) {
+  const [state, setState] = useState<{ kind: "idle" } | { kind: "waiting" } | { kind: "ok"; ms: number; host?: string } | { kind: "none" } | { kind: "error"; msg: string }>({ kind: "idle" });
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+
+  async function ping() {
+    if (timer.current) clearTimeout(timer.current);
+    setState({ kind: "waiting" });
+    try {
+      const { nonce } = await pingRunner();
+      const started = Date.now();
+      const check = async () => {
+        try {
+          const pong = await getPong(nonce);
+          if (pong.answered) return setState({ kind: "ok", ms: Date.now() - started, host: pong.host });
+          if (Date.now() - started > PING_TIMEOUT_MS) return setState({ kind: "none" });
+          timer.current = setTimeout(check, PING_POLL_MS);
+        } catch (err) {
+          setState({ kind: "error", msg: errorMessage(err) });
+        }
+      };
+      timer.current = setTimeout(check, PING_POLL_MS);
+    } catch (err) {
+      setState({ kind: "error", msg: errorMessage(err) });
+    }
+  }
+
+  return (
+    <section className="runner" aria-label="PC runner">
+      <span className="runner-status" data-online={online === undefined ? "unknown" : String(online)}>
+        PC runner {online === undefined ? "…" : online ? "online" : "offline"}
+      </span>
+      <button type="button" onClick={ping} disabled={state.kind === "waiting"}>
+        {state.kind === "waiting" ? "Pinging…" : "Ping"}
+      </button>
+      <span className="runner-ping muted" role="status">
+        {state.kind === "ok" && `Answered in ${(state.ms / 1000).toFixed(1)} s${state.host ? ` (${state.host})` : ""}`}
+        {state.kind === "none" && "No answer in 45 s. The PC is off, asleep, or busy with a run."}
+        {state.kind === "error" && state.msg}
+      </span>
+    </section>
+  );
+}
+
+function ThemePicker() {
+  // The boot script has already applied the saved theme; read it after mount to avoid a hydration mismatch.
+  const [theme, setTheme] = useState<Theme>("classic");
+  useEffect(() => setTheme(currentTheme()), []);
+  return (
+    <label className="theme-picker">
+      Theme
+      <select
+        value={theme}
+        onChange={(e) => {
+          if (!isTheme(e.target.value)) return;
+          applyTheme(e.target.value);
+          setTheme(e.target.value);
+        }}
+      >
+        {THEMES.map((t) => (
+          <option key={t.id} value={t.id} title={t.about}>
+            {t.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

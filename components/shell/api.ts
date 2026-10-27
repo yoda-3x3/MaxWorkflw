@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ApprovalDecision, Run, RunFile, RunIndexEntry, UsageLimit } from "../../lib/types";
+import type { ApprovalDecision, Run, RunFile, RunIndexEntry, RunOptions, UsageLimit } from "../../lib/types";
 import { chunkRanges, withRetry } from "./attachments";
 
 export const POLL_MS = 3000;
@@ -34,12 +34,28 @@ export function getRun(id: string): Promise<Run> {
 }
 
 /** Creates a draft run. It is not queued until `startRun` is called. */
-export function createRun(input: { task: string; repo?: string }): Promise<Run> {
+export interface NewRunInput {
+  task: string;
+  repo?: string;
+  options?: RunOptions;
+}
+
+export function createRun(input: NewRunInput): Promise<Run> {
   return request("/api/runs", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function startRun(runId: string): Promise<Run> {
+/** `cloudError` is set when the run was queued for the cloud but GitHub wouldn't start a runner. */
+export function startRun(runId: string): Promise<Run & { cloudError?: string }> {
   return request(`/api/runs/${encodeURIComponent(runId)}/start`, { method: "POST" });
+}
+
+/** Asks the PC runner to answer. Poll getPong with the nonce. */
+export function pingRunner(): Promise<{ nonce: string; sentAt: number }> {
+  return request("/api/runner/ping", { method: "POST" });
+}
+
+export function getPong(nonce: string): Promise<{ answered: boolean; host?: string; at?: number }> {
+  return request(`/api/runner/ping?nonce=${encodeURIComponent(nonce)}`);
 }
 
 export function listRunFiles(runId: string): Promise<{ files: RunFile[] }> {

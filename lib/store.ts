@@ -34,6 +34,8 @@ import type {
   RunFile,
   RunIndexEntry,
   RunnerHeartbeat,
+  Placement,
+  RunnerPong,
   RunnerStatus,
   RunStatus,
   UsageLimit,
@@ -46,12 +48,22 @@ export const FILE_TTL_SEC = 24 * 60 * 60;
 /** Chunks read per pipeline call, so one response stays a few MB. */
 const READ_CHUNK_PAGE = 8;
 export const QUEUE_KEY = "runner:queue";
+/** Runs placed on the cloud runner (GitHub Actions). The PC runner never reads it. */
+export const CLOUD_QUEUE_KEY = "runner:queue:cloud";
+/** The queue a run goes to: the PC runner's unless it was placed on the cloud. */
+export function queueKeyFor(placement: Placement | undefined): string {
+  return placement === "cloud" ? CLOUD_QUEUE_KEY : QUEUE_KEY;
+}
+/** Ping items share the PC queue so the idle runner needs no extra command to notice them. */
+export const PING_PREFIX = "ping:";
+export const PONG_TTL_SEC = 300;
+const pongKey = (nonce: string) => `runner:pong:${nonce}`;
 export const HEARTBEAT_KEY = "runner:heartbeat";
 /** One JSON object { [limitType]: UsageLimit }. Only the single PC runner writes it. */
 export const USAGE_KEY = "runner:usage";
 
 export interface RunStore {
-  /** Saves the run. `queue: true` also RPUSHes its id onto runner:queue, in the same call. */
+  /** Saves the run. `queue: true` also RPUSHes its id onto its placement's queue, in the same call. */
   saveRun(run: Run, opts?: { queue?: boolean }): Promise<void>;
   /** Owner-only read: null when the run is missing or belongs to someone else. */
   getRun(ownerId: string, runId: string): Promise<Run | null>;
@@ -70,14 +82,20 @@ export interface RunStore {
    * getRun(ownerId, runId) first. Does not wake the runner; use queueDecision for that.
    */
   enqueueDecision(runId: string, decision: ApprovalDecision): Promise<void>;
-  /** Site: enqueues the decision and RPUSHes the run onto runner:queue, in one call. */
-  queueDecision(runId: string, decision: ApprovalDecision): Promise<void>;
+  /** Site: enqueues the decision and RPUSHes the run onto its placement's queue, in one call. */
+  queueDecision(runId: string, decision: ApprovalDecision, placement?: Placement): Promise<void>;
   /** Engine-only. Removes and returns up to `max` queued decisions, oldest first. */
   drainDecisions(runId: string, max?: number): Promise<ApprovalDecision[]>;
-  /** Site: RPUSH a run id onto runner:queue. */
-  enqueueRun(runId: string): Promise<void>;
-  /** Runner: LPOP up to `max` run ids from runner:queue, oldest first. */
-  popRuns(max?: number): Promise<string[]>;
+  /** Site: RPUSH a run id onto its placement's queue (default: the PC's). */
+  enqueueRun(runId: string, placement?: Placement): Promise<void>;
+  /** Runner: LPOP up to `max` run ids from a placement's queue, oldest first. Skips ping items. */
+  popRuns(max?: number, placement?: Placement): Promise<string[]>;
+  /** Site: puts a ping at the front of the PC queue. The runner answers with a pong. */
+  sendPing(nonce: string): Promise<void>;
+  /** Site: the runner's answer to a ping, or null while there is none. */
+  getPong(nonce: string): Promise<RunnerPong | null>;
+  /** Runner: answers a ping. */
+  writePong(pong: RunnerPong): Promise<void>;
   /** Runner: SET NX EX runner:claim:<runId>. True when this runner now holds the run. */
   claimRun(runId: string, runnerId: string, ttlSec?: number): Promise<boolean>;
   /** Runner: releases the claim only when `runnerId` still holds it. */
@@ -222,7 +240,7 @@ export function createRunStore(kv: KvBackend): RunStore {
           ? ["ZREM", ACTIVE_RUNS_KEY, run.id]
           : ["ZADD", ACTIVE_RUNS_KEY, run.updatedAt, run.id],
       ];
-      if (opts?.queue) cmds.push(["RPUSH", QUEUE_KEY, run.id]);
+      if (opts?.queue) cmds.push(["RPUSH", queueKeyFor(run.placement), run.id]);
       await kv.pipeline(cmds);
     },
 
@@ -283,12 +301,12 @@ export function createRunStore(kv: KvBackend): RunStore {
       await one(["RPUSH", decisionsKey(runId), JSON.stringify(decision)]);
     },
 
-    async queueDecision(runId, decision) {
+    async queueDecision(runId, decision, placement) {
       assertRunId(runId);
       if (decision.runId !== runId) throw new Error("decision runId mismatch");
       await kv.pipeline([
         ["RPUSH", decisionsKey(runId), JSON.stringify(decision)],
-        ["RPUSH", QUEUE_KEY, runId],
+        ["RPUSH", queueKeyFor(placement), runId],
       ]);
     },
 
@@ -298,13 +316,27 @@ export function createRunStore(kv: KvBackend): RunStore {
       return (raw ?? []).map((item) => JSON.parse(item) as ApprovalDecision);
     },
 
-    async enqueueRun(runId) {
+    async enqueueRun(runId, placement) {
       assertRunId(runId);
-      await one(["RPUSH", QUEUE_KEY, runId]);
+      await one(["RPUSH", queueKeyFor(placement), runId]);
     },
 
-    async popRuns(max = 5) {
-      return validIds(await one<string[] | null>(["LPOP", QUEUE_KEY, Math.max(1, max)]));
+    async popRuns(max = 5, placement) {
+      return validIds(await one<string[] | null>(["LPOP", queueKeyFor(placement), Math.max(1, max)]));
+    },
+
+    async sendPing(nonce) {
+      if (!/^[A-Za-z0-9-]{8,64}$/.test(nonce)) throw new Error("invalid ping nonce");
+      await one(["LPUSH", QUEUE_KEY, PING_PREFIX + nonce]);
+    },
+
+    async getPong(nonce) {
+      const raw = await one<string | null>(["GET", pongKey(nonce)]);
+      return raw ? (JSON.parse(raw) as RunnerPong) : null;
+    },
+
+    async writePong(pong) {
+      await one(["SET", pongKey(pong.nonce), JSON.stringify(pong), "EX", PONG_TTL_SEC]);
     },
 
     async claimRun(runId, runnerId, ttlSec = DEFAULT_CLAIM_TTL_SEC) {
@@ -556,6 +588,13 @@ export function createMemoryBackend(now: () => number = Date.now): KvBackend {
         const [key, ...values] = args;
         const list = lists.get(key) ?? [];
         list.push(...values);
+        lists.set(key, list);
+        return list.length;
+      }
+      case "LPUSH": {
+        const [key, ...values] = args;
+        const list = lists.get(key) ?? [];
+        list.unshift(...values.reverse());
         lists.set(key, list);
         return list.length;
       }

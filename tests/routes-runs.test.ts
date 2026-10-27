@@ -134,6 +134,96 @@ describe("run ownership", () => {
   });
 });
 
+describe("run placement and cloud runner", () => {
+  const realFetch = globalThis.fetch;
+  let dispatched: string[] = [];
+  beforeEach(() => {
+    dispatched = [];
+    process.env.GITHUB_TOKEN = "test-token";
+    globalThis.fetch = (async (url: string | URL) => {
+      dispatched.push(String(url));
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    delete process.env.GITHUB_TOKEN;
+  });
+
+  async function createAndStart(options?: unknown) {
+    const res = await createRunRoute(req("POST", "https://app.test/api/runs", await aliceCookie(), { task: "t", options }));
+    const run = (await res.json()) as Run;
+    const started = await startRoute(req("POST", `https://app.test/api/runs/${run.id}/start`, await aliceCookie()), {
+      params: Promise.resolve({ id: run.id }),
+    });
+    return { run, started: (await started.json()) as Run & { cloudError?: string } };
+  }
+
+  test("auto with the PC runner offline goes to the cloud queue and starts a cloud runner", async () => {
+    const { run, started } = await createAndStart();
+    assert.equal(started.placement, "cloud");
+    assert.deepEqual(await getRunStore().popRuns(10, "pc"), []);
+    assert.deepEqual(await getRunStore().popRuns(10, "cloud"), [run.id]);
+    assert.equal(dispatched.length, 1);
+    assert.match(dispatched[0], /\/actions\/workflows\/cloud-runner\.yml\/dispatches$/);
+  });
+
+  test("Run on: PC stays on the PC queue even while the runner is offline", async () => {
+    const { run, started } = await createAndStart({ runOn: "pc" });
+    assert.equal(started.placement, "pc");
+    assert.deepEqual(await getRunStore().popRuns(10, "pc"), [run.id]);
+    assert.equal(dispatched.length, 0);
+  });
+
+  test("Run on: Cloud goes to the cloud even while the PC is online", async () => {
+    await getRunStore().heartbeat({ runnerId: "r1", pid: 1, host: "PC", startedAt: 1, ts: Date.now() });
+    const { run, started } = await createAndStart({ runOn: "cloud" });
+    assert.equal(started.placement, "cloud");
+    assert.deepEqual(await getRunStore().popRuns(10, "cloud"), [run.id]);
+  });
+
+  test("a refused dispatch is reported but the run stays queued for the cloud", async () => {
+    globalThis.fetch = (async () => new Response("nope", { status: 403 })) as typeof fetch;
+    const { run, started } = await createAndStart({ runOn: "cloud" });
+    assert.equal(started.status, "queued");
+    assert.match(started.cloudError ?? "", /Actions: Read and write/);
+    assert.deepEqual(await getRunStore().popRuns(10, "cloud"), [run.id]);
+  });
+
+  test("advanced options are validated and saved on the run", async () => {
+    const ok = await createRunRoute(req("POST", "https://app.test/api/runs", await aliceCookie(), {
+      task: "t",
+      options: { runOn: "auto", shape: "three-tier", maxAgents: "12", models: { lead: "claude-opus-5-5", worker: "default" } },
+    }));
+    assert.equal(ok.status, 201);
+    assert.deepEqual(((await ok.json()) as Run).options, { shape: "three-tier", maxAgents: 12, models: { lead: "claude-opus-5-5" } });
+    for (const bad of [{ shape: "deep" }, { maxAgents: 99 }, { models: { worker: "gpt-5" } }, { runOn: "moon" }]) {
+      const res = await createRunRoute(req("POST", "https://app.test/api/runs", await aliceCookie(), { task: "t", options: bad }));
+      assert.equal(res.status, 400, JSON.stringify(bad));
+    }
+  });
+});
+
+describe("ping", () => {
+  test("a ping goes to the front of the PC queue and its pong is read back", async () => {
+    const { POST: ping, GET: pong } = await import("@/app/api/runner/ping/route");
+    const sent = await ping(req("POST", "https://app.test/api/runner/ping", await aliceCookie()));
+    assert.equal(sent.status, 202);
+    const { nonce } = (await sent.json()) as { nonce: string };
+    const ask = async () => (await pong(req("GET", `https://app.test/api/runner/ping?nonce=${nonce}`, await aliceCookie()))).json();
+    assert.deepEqual(await ask(), { answered: false });
+    // Ping items are never handed out as runs.
+    assert.deepEqual(await getRunStore().popRuns(10, "pc"), []);
+    await getRunStore().writePong({ nonce, host: "PC", runnerId: "r1", at: 5 });
+    assert.deepEqual(await ask(), { answered: true, host: "PC", at: 5 });
+  });
+
+  test("ping requires a session", async () => {
+    const { POST: ping } = await import("@/app/api/runner/ping/route");
+    assert.equal((await ping(req("POST", "https://app.test/api/runner/ping", undefined))).status, 401);
+  });
+});
+
 describe("starting runs", () => {
   test("an allowed user's POST creates a draft that is not queued until start", async () => {
     const res = await createRunRoute(req("POST", "https://app.test/api/runs", await aliceCookie(), { task: "  ship it  " }));
@@ -144,6 +234,8 @@ describe("starting runs", () => {
     assert.equal(run.status, "draft");
     assert.deepEqual(await getRunStore().popRuns(10), []);
 
+    // Auto goes to the PC while its runner is online.
+    await getRunStore().heartbeat({ runnerId: "r1", pid: 1, host: "PC", startedAt: 1, ts: Date.now() });
     const started = await startRoute(req("POST", `https://app.test/api/runs/${run.id}/start`, await aliceCookie()), {
       params: Promise.resolve({ id: run.id }),
     });

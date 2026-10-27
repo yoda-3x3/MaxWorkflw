@@ -33,6 +33,8 @@ export function createUpstashClient(opts: { url: string; token: string; fetch?: 
 // Keys shared with the site. The backend owns the names; see lib/store.ts.
 export const RUNNER_KEYS = {
   queue: 'runner:queue',
+  cloudQueue: 'runner:queue:cloud',
+  pong: (nonce: string) => `runner:pong:${nonce}`,
   heartbeat: 'runner:heartbeat',
   claim: (runId: string) => `runner:claim:${runId}`,
   events: (runId: string) => `run:${runId}:events`,
@@ -41,15 +43,29 @@ export const RUNNER_KEYS = {
 // Lua: delete the key only when it still holds our value. Same pattern the store uses for locks.
 const RELEASE_IF_EQUALS = 'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end'
 
+// The PC runner reads runner:queue; the cloud runner (GitHub Actions) reads runner:queue:cloud.
+export type QueueName = 'pc' | 'cloud'
+const queueKey = (q: QueueName) => (q === 'cloud' ? RUNNER_KEYS.cloudQueue : RUNNER_KEYS.queue)
+
+// Ping items ride the PC queue as "ping:<nonce>"; the runner answers with a pong.
+export const PING_PREFIX = 'ping:'
+const PONG_TTL_SEC = 300
+
 // Puts a run back on the queue, e.g. when shutdown stops it between steps, so no other runner misses it.
-export async function requeueRun(client: UpstashClient, runId: string): Promise<void> {
-  await client.command(['RPUSH', RUNNER_KEYS.queue, runId])
+export async function requeueRun(client: UpstashClient, runId: string, queue: QueueName = 'pc'): Promise<void> {
+  await client.command(['RPUSH', queueKey(queue), runId])
 }
 
-export async function popQueue(client: UpstashClient, max: number): Promise<string[]> {
-  const result = await client.command(['LPOP', RUNNER_KEYS.queue, max])
+export async function popQueue(client: UpstashClient, max: number, queue: QueueName = 'pc'): Promise<string[]> {
+  const result = await client.command(['LPOP', queueKey(queue), max])
   if (result === null || result === undefined) return []
   return Array.isArray(result) ? result.map(String) : [String(result)]
+}
+
+// Answers a ping from the site's "Ping PC" button.
+export async function writePong(client: UpstashClient, nonce: string, host: string, runnerId: string): Promise<void> {
+  const pong = { nonce, host, runnerId, at: Date.now() }
+  await client.command(['SET', RUNNER_KEYS.pong(nonce), JSON.stringify(pong), 'EX', PONG_TTL_SEC])
 }
 
 // SET NX EX: true when this runner now holds the claim on the run.

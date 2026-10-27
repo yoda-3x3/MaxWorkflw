@@ -37,6 +37,34 @@ export type AgentRole = "orchestrator" | "lead" | "worker";
 /** Model IDs. Defaults come from env (ORCHESTRATOR_MODEL, LEAD_MODEL, WORKER_MODEL). */
 export type ModelId = string;
 
+/** Models offered in Advanced options. Anything else is rejected by the route. */
+export const MODEL_CHOICES = [
+  { id: "claude-opus-5-5", label: "Opus 5.5" },
+  { id: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+  { id: "claude-haiku-5-5", label: "Haiku 5.5" },
+  { id: "claude-fable-5-1", label: "Fable 5.1" },
+] as const;
+
+// ---- Per-run options (Advanced options on the New run form) ----
+
+/** Where the run executes. auto = the PC if its runner is online, otherwise the cloud. */
+export type RunOn = "auto" | "pc" | "cloud";
+
+/** Team shape the Orchestrator is asked for. three-tier = every unit is a Lead with Workers. */
+export type TeamShape = "auto" | "three-tier" | "flat";
+
+export interface RunOptions {
+  runOn?: RunOn;
+  shape?: TeamShape;
+  /** Agent cap for this run, 2..MAX_AGENTS. */
+  maxAgents?: number;
+  /** Per-tier model overrides; unset tiers use the runner's defaults. */
+  models?: Partial<Record<AgentRole, ModelId>>;
+}
+
+/** Which runner's queue a started run went to. */
+export type Placement = "pc" | "cloud";
+
 // ---- Statuses ----
 
 export type RunStatus =
@@ -167,6 +195,10 @@ export interface Run {
   task: string;
   /** Optional repo in `owner/name` form. */
   repo?: string;
+  /** Advanced options chosen at creation. */
+  options?: RunOptions;
+  /** Set when the run is started: the PC runner's queue or the cloud runner's. */
+  placement?: Placement;
   status: RunStatus;
   plan?: Plan;
   /** Set when the Orchestrator writes the final report. */
@@ -211,6 +243,15 @@ export interface UsageLimit {
   resetsAt?: number;
   /** Epoch ms when the runner last saw it. */
   updatedAt: number;
+}
+
+/** Written by the PC runner when it pops a ping off its queue (runner:pong:<nonce>). */
+export interface RunnerPong {
+  nonce: string;
+  host: string;
+  runnerId: string;
+  /** Epoch ms when the runner answered. */
+  at: number;
 }
 
 export interface RunnerStatus {

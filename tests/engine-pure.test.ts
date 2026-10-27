@@ -4,12 +4,15 @@ import {
   applyDecisions,
   blockFailed,
   buildAgents,
+  buildRun,
   failAgent,
+  runAgentCap,
+  withRunModels,
   parseApprovalInput,
   recoverStuck,
   selectReady,
 } from '../lib/engine'
-import { capPlan } from '../lib/prompts'
+import { capPlan, plannerSystemPrompt } from '../lib/prompts'
 import { AGENT_STALL_MS, MAX_AGENTS, type Agent, type Plan, type Run } from '../lib/types'
 
 const models = { orchestrator: 'opus', lead: 'sonnet', worker: 'haiku' }
@@ -250,4 +253,24 @@ test('parseApprovalInput maps the four hard-stop rule numbers and rejects everyt
   assert.equal(parseApprovalInput({ rule: 1, request: '   ' }), null)
   assert.equal(parseApprovalInput({ rule: '1', request: 'x' }), null)
   assert.equal(parseApprovalInput(null), null)
+})
+
+test('run options: agent cap is clamped and per-tier models override the defaults', () => {
+  const base = buildRun({ ownerId: 'o', task: 't', now: 1, id: 'r' })
+  assert.equal(runAgentCap(base), MAX_AGENTS)
+  assert.equal(runAgentCap({ ...base, options: { maxAgents: 12 } }), 12)
+  assert.equal(runAgentCap({ ...base, options: { maxAgents: 1 } }), 2)
+  assert.equal(runAgentCap({ ...base, options: { maxAgents: 500 } }), MAX_AGENTS)
+  const deps = { models: { orchestrator: 'o', lead: 'l', worker: 'w' } } as never
+  assert.deepEqual((withRunModels(deps, { ...base, options: { models: { worker: 'claude-opus-5-5' } } }) as { models: unknown }).models, {
+    orchestrator: 'o', lead: 'l', worker: 'claude-opus-5-5',
+  })
+  assert.equal(withRunModels(deps, base), deps)
+})
+
+test('team shape: the planner is told to use leads with workers (3 tiers), or none (flat)', () => {
+  assert.match(plannerSystemPrompt({ shape: 'three-tier' }), /3-tier team .*give every unit "workers"/)
+  assert.match(plannerSystemPrompt({ shape: 'flat' }), /no unit gets "workers"/)
+  assert.doesNotMatch(plannerSystemPrompt(), /The owner asked for/)
+  assert.match(plannerSystemPrompt({ maxAgents: 7 }), /at most 7 agents/)
 })

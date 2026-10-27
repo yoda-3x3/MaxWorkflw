@@ -14,6 +14,7 @@
   "vars": {
     "APP_ORIGIN": "https://workflwpro.pages.dev",
     "ALLOWED_USERS": "yoda-3x3",
-    "TICKER_SYMBOLS": "AAPL,TSLA,PLTR,GLD"
+    "TICKER_SYMBOLS": "AAPL,TSLA,PLTR,GLD",
+    "CLOUD_RUNNER_REPO": "yoda-3x3/MaxWorkflw"
   }
 }

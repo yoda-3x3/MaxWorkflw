@@ -2,7 +2,7 @@
 // Pure functions and constants: no I/O, no SDK.
 
 import { MAX_AGENTS, MAX_DEPTH } from './types';
-import type { ApprovalKind, Plan, PlanUnit, PlanWorker } from './types';
+import type { ApprovalKind, Plan, PlanUnit, PlanWorker, TeamShape } from './types';
 
 // The four hard stops (§1). Agents ask upward with an APPROVAL_REQUEST line; they never act.
 export const HARD_STOP_RULES: ReadonlyArray<{ rule: number; kind: ApprovalKind; text: string }> = [
@@ -95,6 +95,17 @@ export function unitBrief(
 export interface PlannerLimits {
   maxAgents?: number;
   maxDepth?: number;
+  /** The owner's requested team shape (Advanced options). */
+  shape?: TeamShape;
+}
+
+/** Extra planner instruction for a requested team shape; empty for auto. */
+export function shapeInstruction(shape: TeamShape | undefined): string {
+  if (shape === 'three-tier') {
+    return 'The owner asked for a 3-tier team (you -> leads -> workers): give every unit "workers" (at least 2), so each unit is a lead that integrates its workers. Only leave out workers for a unit that truly cannot be split.';
+  }
+  if (shape === 'flat') return 'The owner asked for a flat team: no unit gets "workers". Every unit is one agent.';
+  return '';
 }
 
 export function plannerSystemPrompt(limits: PlannerLimits = {}): string {
@@ -110,6 +121,7 @@ export function plannerSystemPrompt(limits: PlannerLimits = {}): string {
     '- Standard: a few independent units, no workers. Each unit becomes one agent.',
     '- Large: a unit that needs several parallel pieces gets "workers". It becomes a lead that integrates its workers\' reports.',
     `Never nest deeper than ${maxDepth} tiers. Fewest agents that finish fastest.`,
+    ...(shapeInstruction(limits.shape) ? [shapeInstruction(limits.shape)] : []),
     '',
     `Limit: at most ${maxAgents} agents in total, counting you, every lead and every worker. Plan for fewer. Run independent units in parallel. Use deps only for true dependencies.`,
     '',
