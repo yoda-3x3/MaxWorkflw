@@ -1,0 +1,120 @@
+# Auto-deploy to Cloudflare. On every push to main it deploys the Worker (`npm run deploy`), and it
+# deploys the workflwpro.pages.dev front door (`npm run deploy:pages`) only when pages-proxy/ changed.
+# A manual run (workflow_dispatch) deploys both.
+#
+# Repo secrets: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. Without them the jobs are skipped
+# with a notice instead of failing. Worker runtime secrets and vars are not touched here; they stay
+# as configured in Cloudflare (wrangler.jsonc vars, `wrangler secret put`). See docs/deploy.md.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Deploys run one at a time. A deploy queued behind a running one waits instead of racing it.
+concurrency:
+  group: cloudflare-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check secrets and changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+      pages: ${{ steps.gate.outputs.pages }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # Full history, so the commit range of a push can be diffed below.
+          fetch-depth: 0
+
+      - name: Secrets and path filter
+        id: gate
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "::notice title=Cloudflare deploy skipped::Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repo secrets to enable auto-deploy. See docs/deploy.md."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "pages=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+          # pages-proxy is deployed only when files under it changed in this push. A manual run
+          # always deploys it. A push with no usable "before" commit (a new branch, or a force push
+          # that dropped the old commit) also deploys it, since there is no range to check.
+          pages=true
+          if [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            if git diff --quiet "$BEFORE" "$AFTER" -- pages-proxy; then
+              pages=false
+            fi
+          fi
+          echo "pages=$pages" >> "$GITHUB_OUTPUT"
+          echo "Pages proxy deploy: $pages"
+
+  worker:
+    name: Deploy Worker
+    needs: check
+    if: needs.check.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    # The OpenNext build and wrangler deploy finish well inside this.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          # package.json engines is node >=20. 22 matches the cloud runner workflow.
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build and deploy the Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy
+
+  pages:
+    name: Deploy Pages proxy
+    needs: [check, worker]
+    # Runs after the Worker, because the proxy forwards to it. Skipped when the Worker failed.
+    if: >-
+      ${{ always() && needs.check.outputs.enabled == 'true' && needs.check.outputs.pages == 'true'
+      && needs.worker.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `deploy:pages` runs wrangler from the root node_modules, so the install is needed here too.
+      - run: npm ci
+
+      - name: Deploy the Pages proxy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy:pages
