@@ -40,13 +40,57 @@ export interface RepoListQuery {
   perPage: number;
 }
 
-export class GitHubRepoListError extends Error {
+export interface NewRepoInput {
+  name: string;
+  description?: string;
+  /** Defaults to true. A new repo is private unless the caller says otherwise. */
+  private?: boolean;
+}
+
+/** Thrown for any GitHub failure in this module. `message` is safe to show the user. */
+export class GitHubRepoError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
     super(message);
-    this.name = 'GitHubRepoListError';
+    this.name = 'GitHubRepoError';
     this.status = status;
   }
+}
+
+const NEW_REPO_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+const MAX_DESCRIPTION_CHARS = 350;
+
+/**
+ * Checks a name for a new repo. Same character rules as GitHub, plus the ones the runner relies on:
+ * no leading "." (so it can never read as a git option), no trailing ".", and no ".git" suffix.
+ * Returns an error message, or null when the name is fine.
+ */
+export function validateNewRepoName(name: string): string | null {
+  if (!name) return 'Enter a repo name';
+  if (name.length > 100) return 'Repo names are at most 100 characters';
+  if (!NEW_REPO_NAME_RE.test(name)) return 'Use letters, digits, "-", "_" or "." (no spaces, no leading ".")';
+  if (name.endsWith('.') || name.toLowerCase().endsWith('.git')) return 'Repo names cannot end in "." or ".git"';
+  return null;
+}
+
+/** Checks everything about a create request. Returns an error message, or null when it is valid. */
+export function validateNewRepo(input: NewRepoInput): string | null {
+  const nameError = validateNewRepoName(input.name);
+  if (nameError) return nameError;
+  if (input.description !== undefined && input.description.length > MAX_DESCRIPTION_CHARS) {
+    return `Description is at most ${MAX_DESCRIPTION_CHARS} characters`;
+  }
+  if (input.private !== undefined && typeof input.private !== 'boolean') return 'private must be true or false';
+  return null;
+}
+
+/** Maps a failed POST /user/repos to a message the user can act on. */
+function createFailureMessage(status: number, apiMessage: string, name: string): string {
+  if (status === 422 && /already exists/i.test(apiMessage)) return `You already have a repo named ${name}. Pick another name or select it from the list.`;
+  if (status === 401) return 'GitHub rejected GITHUB_TOKEN. Check that it is still valid.';
+  if (status === 403) return 'GitHub would not create the repo. GITHUB_TOKEN needs permission to create repositories (a classic token with the repo scope works).';
+  if (status === 422) return `GitHub would not create ${name}: ${apiMessage || 'the name or settings were rejected'}.`;
+  return `GitHub could not create ${name} (status ${status}).`;
 }
 
 function clampInt(raw: string | null, fallback: number, min: number, max: number): number {
@@ -117,6 +161,54 @@ export interface ListReposOptions {
   maxPages?: number;
 }
 
+export interface CreateRepoOptions {
+  token: string;
+  fetch?: typeof fetch;
+  apiBase?: string;
+}
+
+/**
+ * Creates a repo under the token's own account, with an initial commit so it has a default branch
+ * for the runner to branch from. Never deletes or changes an existing repo.
+ */
+export async function createAccessibleRepo(input: NewRepoInput, opts: CreateRepoOptions): Promise<GitHubRepoSummary> {
+  const invalid = validateNewRepo(input);
+  if (invalid) throw new GitHubRepoError(422, invalid);
+
+  const doFetch = opts.fetch ?? globalThis.fetch;
+  const apiBase = (opts.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, '');
+  const res = await doFetch(`${apiBase}/user/repos`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${opts.token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+      'X-GitHub-Api-Version': API_VERSION,
+      'User-Agent': 'WorkflwPro',
+    },
+    body: JSON.stringify({
+      name: input.name,
+      description: input.description ?? '',
+      private: input.private ?? true,
+      auto_init: true,
+    }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    let apiMessage = '';
+    try {
+      const data = (await res.json()) as { message?: unknown };
+      if (typeof data.message === 'string') apiMessage = data.message;
+    } catch {
+      // Body is not JSON. The status is enough.
+    }
+    throw new GitHubRepoError(res.status, createFailureMessage(res.status, apiMessage, input.name));
+  }
+  const repo = toRepoSummary(await res.json());
+  if (!repo) throw new GitHubRepoError(502, 'GitHub created the repo but sent an unexpected reply');
+  return repo;
+}
+
 /**
  * Reads the repos the token can access (owner, collaborator and org member), newest pushed first.
  * Duplicates across pages are dropped. The token is only sent in the Authorization header.
@@ -137,9 +229,9 @@ export async function listAccessibleRepos(opts: ListReposOptions): Promise<{ rep
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!res.ok) throw new GitHubRepoListError(res.status, `GitHub returned ${res.status} for the repo list`);
+    if (!res.ok) throw new GitHubRepoError(res.status, `GitHub returned ${res.status} for the repo list`);
     const batch: unknown = await res.json();
-    if (!Array.isArray(batch)) throw new GitHubRepoListError(502, 'GitHub sent an unexpected repo list');
+    if (!Array.isArray(batch)) throw new GitHubRepoError(502, 'GitHub sent an unexpected repo list');
     for (const item of batch) {
       const repo = toRepoSummary(item);
       if (repo && !seen.has(repo.fullName)) seen.set(repo.fullName, repo);
