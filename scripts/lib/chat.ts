@@ -34,7 +34,7 @@ export async function answerChat(job: ChatJob, deps: AnswerDeps): Promise<ChatMe
     context = run && run.ownerId === job.ownerId ? runContext(run) : NO_RUN_CONTEXT
   }
 
-  const base = { id: newId(), role: 'orchestrator' as const, runId: job.runId, replyTo: job.messageId, model: deps.model, createdAt: now() }
+  const base = { id: newId(), role: 'assistant' as const, runId: job.runId, replyTo: job.messageId, model: deps.model, createdAt: now() }
   let reply: ChatMessage
   try {
     const out = await deps.llm.complete({

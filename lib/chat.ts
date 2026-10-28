@@ -21,9 +21,9 @@ export function cleanChatText(raw: unknown): string | null {
 /** Owner messages with no orchestrator reply yet, oldest first. */
 export function pendingMessageIds(messages: ChatMessage[]): string[] {
   const answered = new Set(
-    messages.filter((m) => m.role === "orchestrator" && m.replyTo).map((m) => m.replyTo as string),
+    messages.filter((m) => m.role === "assistant" && m.replyTo).map((m) => m.replyTo as string),
   );
-  return messages.filter((m) => m.role === "owner" && !answered.has(m.id)).map((m) => m.id);
+  return messages.filter((m) => m.role === "user" && !answered.has(m.id)).map((m) => m.id);
 }
 
 /**
@@ -59,7 +59,7 @@ export function chatUserPrompt(args: { message: string; transcript: ChatMessage[
   if (recent.length > 0) {
     lines.push("CONVERSATION SO FAR:");
     for (const m of recent) {
-      lines.push(`${m.role === "owner" ? "Owner" : "Orchestrator"}: ${clip(m.text, CHAT_MESSAGE_CLIP)}`);
+      lines.push(`${m.role === "user" ? "Owner" : "Orchestrator"}: ${clip(m.text, CHAT_MESSAGE_CLIP)}`);
     }
     lines.push("");
   }

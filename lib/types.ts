@@ -298,16 +298,17 @@ export const CHAT_MAX_CHARS = 4000;
 export const CHAT_HISTORY_MAX = 200;
 
 /**
- * One line in a chat. The chat is append-only: a reply is a new `orchestrator` message whose
- * `replyTo` is the owner message it answers. "Pending" means no reply has been appended yet.
+ * One line in a chat. The chat is append-only: a reply is a new `assistant` message whose
+ * `replyTo` is the user message it answers. "Pending" means no reply has been appended yet.
  */
 export interface ChatMessage {
   id: string;
-  role: "owner" | "orchestrator";
+  /** `user` is the owner; `assistant` is the Orchestrator. */
+  role: "user" | "assistant";
   text: string;
   /** The run this chat is about. Absent for the general chat. */
   runId?: string;
-  /** Orchestrator replies: the owner message they answer. */
+  /** Assistant replies: the user message they answer. */
   replyTo?: string;
   /** Set on an orchestrator reply that could not be produced; `text` then says why in plain words. */
   error?: string;
