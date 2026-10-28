@@ -244,3 +244,58 @@ export async function listAccessibleRepos(opts: ListReposOptions): Promise<{ rep
   }
   return { repos: [...seen.values()], truncated: true };
 }
+
+/** How many repos the sidebar picker loads. Beyond this, typing owner/name still works. */
+export const REPO_PICKER_MAX_REPOS = 300;
+/** Option values for the picker's native select. Real repos use their owner/name. */
+export const REPO_SELECT_NONE = '';
+export const REPO_SELECT_MANUAL = '__manual__';
+
+/**
+ * Walks pages from `fetchPage` (1-based) until GitHub has no more or `maxRepos` are collected.
+ * Duplicates are dropped. `truncated` is true when repos were left unread.
+ */
+export async function loadRepoPages(
+  fetchPage: (page: number) => Promise<Pick<RepoPage, 'repos' | 'hasMore' | 'truncated'>>,
+  maxRepos = REPO_PICKER_MAX_REPOS,
+  maxPages = REPO_LIST_MAX_PAGES,
+): Promise<{ repos: GitHubRepoSummary[]; truncated: boolean }> {
+  const seen = new Map<string, GitHubRepoSummary>();
+  for (let page = 1; page <= maxPages; page++) {
+    const next = await fetchPage(page);
+    for (const r of next.repos) if (!seen.has(r.fullName)) seen.set(r.fullName, r);
+    if (seen.size >= maxRepos || !next.hasMore) {
+      return { repos: [...seen.values()].slice(0, maxRepos), truncated: next.hasMore || next.truncated };
+    }
+  }
+  return { repos: [...seen.values()].slice(0, maxRepos), truncated: true };
+}
+
+/**
+ * The native select's value for the current state. A listed repo shows as itself. Otherwise the
+ * manual option shows when the user opened it or typed something, and "No repo" shows when empty.
+ */
+export function selectOptionValue(value: string, repos: GitHubRepoSummary[], manualOpen: boolean): string {
+  if (value && repos.some((r) => r.fullName === value)) return value;
+  if (manualOpen || value) return REPO_SELECT_MANUAL;
+  return REPO_SELECT_NONE;
+}
+
+/** Options for the select: the filter applied, with the selected repo kept even when filtered out. */
+export function repoSelectOptions(repos: GitHubRepoSummary[], filter: string, selected: string): GitHubRepoSummary[] {
+  const matches = filterRepos(repos, filter);
+  if (!selected) return matches;
+  const picked = repos.find((r) => r.fullName === selected);
+  if (!picked || matches.includes(picked)) return matches;
+  return [picked, ...matches];
+}
+
+/** Adds a repo the list does not have yet (a repo just created). Returns the same array when it is listed. */
+export function withRepoListed(repos: GitHubRepoSummary[], repo: GitHubRepoSummary): GitHubRepoSummary[] {
+  return repos.some((r) => r.fullName === repo.fullName) ? repos : [repo, ...repos];
+}
+
+/** Text for one option, e.g. "acme/app (private)". */
+export function repoSelectLabel(repo: GitHubRepoSummary): string {
+  return `${repo.fullName} (${repo.private ? 'private' : 'public'})`;
+}

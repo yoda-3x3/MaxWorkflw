@@ -1,0 +1,67 @@
+/* Repo field in the run sidebar: a native select first (works on touch), with a text fallback. */
+
+.repo-field {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.repo-label {
+  font-size: 0.9rem;
+}
+
+/* 16px stops iOS zooming into the field. 44px is a comfortable touch target. */
+.repo-field select,
+.repo-field input[type="text"],
+.repo-field input[type="search"],
+.repo-field input:not([type]) {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  font-size: 16px;
+}
+
+.repo-status {
+  margin: 0;
+  font-size: 0.85rem;
+  display: grid;
+  gap: 0.4rem;
+  justify-items: start;
+}
+
+.repo-status .form-error {
+  margin: 0;
+}
+
+.repo-retry,
+.repo-create-toggle {
+  justify-self: start;
+  min-height: 44px;
+  padding: 0 0.9rem;
+}
+
+.repo-create {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  border: 1px dashed currentColor;
+  border-radius: 6px;
+}
+
+.repo-create-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.repo-create-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.repo-create-row button {
+  min-height: 44px;
+  padding: 0 0.9rem;
+}

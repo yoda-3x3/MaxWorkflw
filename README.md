@@ -161,7 +161,7 @@ HandCam loads the MediaPipe WASM and gesture model from a CDN when you turn it o
 - Each run has a **24-hour deadline**. A run past it fails with a clear message.
 - Each agent gets **one retry** (two attempts in total). After that it is marked failed, and the run continues and reports it.
 - Repo mode works only on its own branch, `workflwpro/<runId>`. It never merges, deletes, or force-pushes. You press Merge yourself.
-- Pick the repo in the sidebar's **Repo** field. Type `owner/name` by hand, or search the list (type to filter, arrow keys and Enter to choose, **Load more** for more pages). The list shows private/public and the default branch. Only the first 1,000 repos are searched.
+- Pick the repo in the sidebar's **Repo** field. It is a dropdown of the repos `GITHUB_TOKEN` can reach (it loads up to 300), with **No repo** and **Type owner/name manually…** at the ends. A filter box appears when there are many repos. If the list cannot load, the field falls back to a plain text box. Choose **Type owner/name manually…** to type any repo.
 - **Create new repo** makes a new repo under the token's account with an initial commit, so it has a default branch. It is private unless you untick Private. The name is checked before GitHub is called. Nothing is ever deleted.
 - For an existing repo, the PC runner clones it, branches `workflwpro/<runId>` from the default branch, or reuses that branch if an earlier job pushed it. The run's PR targets the default branch. Repo mode needs `gh auth login` on the PC, and the PC account needs push access to the repo.
 - Writes block path traversal, `.git/`, and `.env*` files.
