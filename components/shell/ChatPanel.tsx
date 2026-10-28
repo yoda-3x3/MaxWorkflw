@@ -1,33 +1,43 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { chatErrorMessage, pendingUserIds, sendChat, useChat, type ChatMessage } from "./chatApi";
+import { chatErrorMessage, sendChat, useChat, type ChatMessage } from "./chatApi";
 
 export function ChatPanel({ onClose }: { onClose: () => void }) {
   const chat = useChat(true);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // Set when the last message went to the cloud runner because the PC is offline.
+  const [cloudNote, setCloudNote] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const messages = chat.data?.messages ?? [];
-  const pending = pendingUserIds(messages);
-  const runnerOffline = chat.data?.runner?.online === false;
+  const pendingCount = chat.data?.pending.length ?? 0;
+  const runnerOffline = chat.data?.runner.online === false;
 
   // Keep the newest message in view as replies arrive.
   useEffect(() => {
     const list = listRef.current;
     if (list) list.scrollTop = list.scrollHeight;
-  }, [messages.length, pending.size]);
+  }, [messages.length, pendingCount]);
 
   async function send() {
     const text = draft.trim();
     if (!text || sending) return;
     setSending(true);
     setSendError(null);
+    setCloudNote(null);
     try {
-      await sendChat(text);
+      const res = await sendChat(text);
       setDraft("");
+      if (res.placement === "cloud") {
+        setCloudNote(
+          res.cloudError
+            ? `PC runner offline; sent to the cloud runner, but: ${res.cloudError}`
+            : "PC runner offline; sent to the cloud runner.",
+        );
+      }
       chat.refresh();
     } catch (err) {
       setSendError(chatErrorMessage(err));
@@ -60,7 +70,7 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
 
       {runnerOffline && (
         <div role="alert" className="chat-notice">
-          <strong>PC runner offline.</strong> Messages will wait until it is back.
+          <strong>PC runner offline.</strong> Messages go to the cloud runner until it is back.
         </div>
       )}
 
@@ -76,7 +86,7 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
         {messages.map((m) => (
           <ChatBubble key={m.id} message={m} />
         ))}
-        {pending.size > 0 && (
+        {pendingCount > 0 && (
           <div className="chat-bubble chat-bubble-assistant chat-typing" role="status">
             <span className="chat-dots" aria-hidden="true">
               <span />
@@ -88,6 +98,7 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
         )}
       </div>
 
+      {cloudNote && <p className="chat-notice-note">{cloudNote}</p>}
       {sendError && <p className="form-error">{sendError}</p>}
 
       <form className="chat-input" onSubmit={onSubmit}>
@@ -111,8 +122,9 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
 function ChatBubble({ message }: { message: ChatMessage }) {
   const time = new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return (
-    <div className={`chat-bubble chat-bubble-${message.role}`}>
+    <div className={`chat-bubble chat-bubble-${message.role}${message.error ? " chat-bubble-error" : ""}`}>
       <div className="chat-text">{message.text}</div>
+      {message.error && <div className="chat-error-tag">Failed: {message.error}</div>}
       <time className="chat-time" dateTime={new Date(message.createdAt).toISOString()}>
         {time}
       </time>

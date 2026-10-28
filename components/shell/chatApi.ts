@@ -71,9 +71,11 @@ export function useChat(enabled: boolean) {
     if (!enabled) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Only a load that saw a pending message keeps retrying after an error, so a signed-out
+    // or broken API doesn't poll forever.
+    let waiting = false;
 
     const tick = async () => {
-      let waiting = true;
       try {
         const next = await getChat();
         if (cancelled) return;
@@ -81,9 +83,9 @@ export function useChat(enabled: boolean) {
         setError(null);
         waiting = next.pending.length > 0;
       } catch (err) {
-        if (!cancelled) setError(chatErrorMessage(err));
+        if (cancelled) return;
+        setError(chatErrorMessage(err));
       }
-      // A failed load keeps retrying: the reply may still be on its way.
       if (!cancelled && waiting) timer = setTimeout(tick, CHAT_POLL_MS);
     };
     void tick();
