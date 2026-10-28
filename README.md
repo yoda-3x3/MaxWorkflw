@@ -222,7 +222,7 @@ The dashboard shows this when the runner's heartbeat has been missing for 45 sec
 ### The repo list says it is unavailable, or Create new repo fails
 
 - "GITHUB_TOKEN is not configured": set it with `npx wrangler secret put GITHUB_TOKEN`. You can still type `owner/name` by hand.
-- "GitHub rejected GITHUB_TOKEN" or a 401: the token has expired or was revoked. Create a new one (step 2.5) and set it again.
+- "GitHub rejected GITHUB_TOKEN" or a 401: the token has expired or was revoked. Create a new one (step 2, item 5) and set it again.
 - "GitHub would not create the repo" or a 403: the token cannot create repos. Use a classic token with the `repo` scope, or create the repo on GitHub and pick it.
 - "You already have a repo named …": pick another name, or select the existing repo from the list.
 
