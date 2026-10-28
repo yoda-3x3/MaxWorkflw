@@ -290,6 +290,44 @@ export interface RunIndexEntry {
   updatedAt: number;
 }
 
+// ---- Orchestrator chat ----
+
+/** Longest owner message the chat accepts. */
+export const CHAT_MAX_CHARS = 4000;
+/** Messages kept per chat (general or per run). Older ones are trimmed. */
+export const CHAT_HISTORY_MAX = 200;
+
+/**
+ * One line in a chat. The chat is append-only: a reply is a new `orchestrator` message whose
+ * `replyTo` is the owner message it answers. "Pending" means no reply has been appended yet.
+ */
+export interface ChatMessage {
+  id: string;
+  role: "owner" | "orchestrator";
+  text: string;
+  /** The run this chat is about. Absent for the general chat. */
+  runId?: string;
+  /** Orchestrator replies: the owner message they answer. */
+  replyTo?: string;
+  /** Set on an orchestrator reply that could not be produced; `text` then says why in plain words. */
+  error?: string;
+  /** Model that wrote an orchestrator reply. */
+  model?: string;
+  createdAt: number;
+}
+
+/** A queued question. The runner pops it, answers it and appends the reply to the same chat. */
+export interface ChatJob {
+  id: string;
+  ownerId: string;
+  /** Run the chat is about, or absent for the general chat. */
+  runId?: string;
+  /** The owner message being answered. */
+  messageId: string;
+  text: string;
+  createdAt: number;
+}
+
 // ---- Session (auth) ----
 
 export type AuthMethod = "github";
