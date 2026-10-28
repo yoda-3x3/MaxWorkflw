@@ -149,7 +149,7 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
     const token = run.repo ? await readGhToken() : undefined
     if (token) secrets.push(token)
     if (run.repo) {
-      workspace = await prepareWorkspace({ repo: run.repo, runId, exec: execGit })
+      workspace = await prepareWorkspace({ repo: run.repo, runId, token, exec: execGit })
       log(`workspace ready: ${run.repo} on ${workspace.branch}`)
     }
 
@@ -206,7 +206,19 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
       if (pushed) log(`final push of ${workspace.branch}`)
     }
   } catch (err) {
-    log(`run ${runId} failed: ${err instanceof Error ? err.message : String(err)}`)
+    const reason = redact(err instanceof Error ? err.message : String(err), secrets)
+    log(`run ${runId} failed: ${reason}`)
+    // Setup failed before the engine ever ran (clone, attachments...). Fail the run with the reason,
+    // so the site shows it instead of the run sitting at "queued" forever.
+    const latest = await store.getRunForEngine(runId).catch(() => null)
+    if (latest && latest.status === 'queued') {
+      const at = Date.now()
+      latest.status = 'failed'
+      latest.error = `The runner couldn't start this run: ${reason}`.slice(0, 500)
+      latest.events.push({ at, message: latest.error })
+      latest.updatedAt = at
+      await store.saveRun(latest).catch((e: unknown) => log(`could not record the failure: ${e instanceof Error ? e.message : String(e)}`))
+    }
   } finally {
     clearInterval(refresh)
     await batcher.close()
