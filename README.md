@@ -51,7 +51,9 @@ WorkflwPro is built for one owner. It uses your own Claude subscription through 
 2. Homepage URL: `https://workflwpro.pages.dev`
 3. Authorization callback URL: `https://workflwpro.pages.dev/api/auth/github/callback`. The callback is built from `APP_ORIGIN`, so the two must match exactly.
 4. Copy the client ID and generate a client secret. You will set both in step 4.
-5. Create a fine-grained personal access token for the Merge button. Give it contents and pull requests read and write on the repos you use with repo mode, and nothing else. You will set it as `GITHUB_TOKEN` in step 4.
+5. Create a fine-grained personal access token for the Merge button and the repo picker. Give it contents and pull requests read and write on the repos you use with repo mode, plus metadata read (GitHub adds this automatically). The repo picker lists the repos this token can reach, so include every repo you want to pick. You will set it as `GITHUB_TOKEN` in step 4.
+   - "Create new repo" in the sidebar asks GitHub to create a repo under the token's account. Fine-grained tokens may not be allowed to create repos. If creation fails with a permission message, use a classic token with the `repo` scope, or create the repo on GitHub and pick it from the list.
+   - The OAuth sign-in only asks for `read:user`. The repo list and repo creation use `GITHUB_TOKEN`, not the signed-in user's own GitHub token, so they show what that one token can reach.
 
 ### 3. Worker vars (`wrangler.jsonc`)
 
@@ -159,6 +161,9 @@ HandCam loads the MediaPipe WASM and gesture model from a CDN when you turn it o
 - Each run has a **24-hour deadline**. A run past it fails with a clear message.
 - Each agent gets **one retry** (two attempts in total). After that it is marked failed, and the run continues and reports it.
 - Repo mode works only on its own branch, `workflwpro/<runId>`. It never merges, deletes, or force-pushes. You press Merge yourself.
+- Pick the repo in the sidebar's **Repo** field. Type `owner/name` by hand, or search the list (type to filter, arrow keys and Enter to choose, **Load more** for more pages). The list shows private/public and the default branch. Only the first 1,000 repos are searched.
+- **Create new repo** makes a new repo under the token's account with an initial commit, so it has a default branch. It is private unless you untick Private. The name is checked before GitHub is called. Nothing is ever deleted.
+- For an existing repo, the PC runner clones it, branches `workflwpro/<runId>` from the default branch, or reuses that branch if an earlier job pushed it. The run's PR targets the default branch. Repo mode needs `gh auth login` on the PC, and the PC account needs push access to the repo.
 - Writes block path traversal, `.git/`, and `.env*` files.
 
 ### File uploads
@@ -213,6 +218,13 @@ The dashboard shows this when the runner's heartbeat has been missing for 45 sec
 
 - Your GitHub login is not in `ALLOWED_USERS`. The match is case-insensitive, and an empty list denies everyone. Edit the var, then run `npm run deploy`.
 - GitHub reports a redirect URI mismatch. The callback URL in the OAuth app must equal `APP_ORIGIN` plus `/api/auth/github/callback`.
+
+### The repo list says it is unavailable, or Create new repo fails
+
+- "GITHUB_TOKEN is not configured": set it with `npx wrangler secret put GITHUB_TOKEN`. You can still type `owner/name` by hand.
+- "GitHub rejected GITHUB_TOKEN" or a 401: the token has expired or was revoked. Create a new one (step 2.5) and set it again.
+- "GitHub would not create the repo" or a 403: the token cannot create repos. Use a classic token with the `repo` scope, or create the repo on GitHub and pick it.
+- "You already have a repo named …": pick another name, or select the existing repo from the list.
 
 ### Repo-mode run fails with "no gh token for GitHub access"
 

@@ -111,7 +111,7 @@ describe("listAccessibleRepos", () => {
     const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       seen.push({ url, auth: new Headers(init?.headers).get("Authorization") });
-      return jsonResponse(200, url.includes("page=1") ? pageOne : pageTwo);
+      return jsonResponse(200, url.includes("&page=1&") ? pageOne : pageTwo);
     }) as typeof fetch;
 
     const out = await listAccessibleRepos({ token: "tok", fetch: fetchFn, apiBase: "https://api.example" });

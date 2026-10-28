@@ -89,7 +89,7 @@ function createFailureMessage(status: number, apiMessage: string, name: string):
   if (status === 422 && /already exists/i.test(apiMessage)) return `You already have a repo named ${name}. Pick another name or select it from the list.`;
   if (status === 401) return 'GitHub rejected GITHUB_TOKEN. Check that it is still valid.';
   if (status === 403) return 'GitHub would not create the repo. GITHUB_TOKEN needs permission to create repositories (a classic token with the repo scope works).';
-  if (status === 422) return `GitHub would not create ${name}: ${apiMessage || 'the name or settings were rejected'}.`;
+  if (status === 422) return `GitHub would not create ${name}: ${apiMessage.replace(/\.+$/, '') || 'the name or settings were rejected'}.`;
   return `GitHub could not create ${name} (status ${status}).`;
 }
 
@@ -195,10 +195,14 @@ export async function createAccessibleRepo(input: NewRepoInput, opts: CreateRepo
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) {
+    // GitHub puts the detail in `message` and, for validation failures, in errors[].message.
     let apiMessage = '';
     try {
-      const data = (await res.json()) as { message?: unknown };
-      if (typeof data.message === 'string') apiMessage = data.message;
+      const data = (await res.json()) as { message?: unknown; errors?: unknown };
+      const nested = Array.isArray(data.errors)
+        ? data.errors.map((e) => (e && typeof e === 'object' ? (e as { message?: unknown }).message : undefined))
+        : [];
+      apiMessage = [data.message, ...nested].filter((m): m is string => typeof m === 'string').join('; ');
     } catch {
       // Body is not JSON. The status is enough.
     }
