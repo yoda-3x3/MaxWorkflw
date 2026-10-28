@@ -41,11 +41,17 @@ jobs:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
         run: |
+          # Lengths only, never the values. They show whether each secret reached the job.
+          echo "event=$EVENT ref=$REF CLOUDFLARE_API_TOKEN length=${#CF_TOKEN} CLOUDFLARE_ACCOUNT_ID length=${#CF_ACCOUNT}"
           if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
-            echo "::notice title=Cloudflare deploy skipped::Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repo secrets to enable auto-deploy. See docs/deploy.md."
+            missing=""
+            [ -z "$CF_TOKEN" ] && missing="CLOUDFLARE_API_TOKEN"
+            [ -z "$CF_ACCOUNT" ] && missing="${missing:+$missing, }CLOUDFLARE_ACCOUNT_ID"
+            echo "::notice title=Cloudflare deploy skipped::Empty secret(s): $missing. Add them as repo secrets to enable auto-deploy. See docs/deploy.md."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "pages=false" >> "$GITHUB_OUTPUT"
             exit 0
