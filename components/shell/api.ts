@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ApprovalDecision, Run, RunFile, RunIndexEntry, RunOptions, UsageLimit } from "../../lib/types";
+import type { GitHubRepoSummary, RepoPage } from "../../lib/githubRepos";
 import { chunkRanges, withRetry } from "./attachments";
 
 export const POLL_MS = 3000;
@@ -122,6 +123,17 @@ export function decideApproval(
     `/api/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}`,
     { method: "POST", body: JSON.stringify({ decision }) },
   );
+}
+
+/** One page of repos the server can access, filtered by `q`. Pages are 1-based. */
+export function listGitHubRepos(q: string, page = 1, perPage = 30): Promise<RepoPage> {
+  const params = new URLSearchParams({ q, page: String(page), perPage: String(perPage) });
+  return request(`/api/github/repos?${params}`);
+}
+
+/** Creates a repo under the server's GitHub account and returns it. Never deletes anything. */
+export function createGitHubRepo(input: { name: string; description?: string; private: boolean }): Promise<GitHubRepoSummary> {
+  return request("/api/github/repos", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function mergeRun(runId: string): Promise<unknown> {

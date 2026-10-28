@@ -92,6 +92,13 @@ export function splitSecretPaths(paths: string[]): { keep: string[]; unstage: st
   return { keep, unstage }
 }
 
+// `git ls-remote --heads origin <pattern>` matches by suffix, so `feature/workflwpro/r1` also matches
+// `workflwpro/r1`. Only an exact `refs/heads/<branch>` line means the branch exists.
+export function remoteHasBranch(lsRemoteStdout: string, branch: string): boolean {
+  const want = `refs/heads/${branch}`
+  return lsRemoteStdout.split('\n').some((line) => line.split('\t')[1]?.trim() === want)
+}
+
 // `git diff --cached --name-only -z` output: NUL-separated, trailing NUL.
 export function parseNameList(stdout: string): string[] {
   return stdout.split('\0').filter((p) => p.length > 0)
@@ -176,7 +183,7 @@ export async function prepareWorkspace(opts: PrepareOptions): Promise<Workspace>
     if (!BRANCH_RE.test(defaultBranch)) throw new GitError('could not read default branch')
 
     const remote = await git(['ls-remote', '--heads', 'origin', branch], dir, 'ls-remote', true)
-    if (remote.stdout.trim()) {
+    if (remoteHasBranch(remote.stdout, branch)) {
       // Reuse: a previous job for this run already pushed the branch.
       await git(
         ['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
