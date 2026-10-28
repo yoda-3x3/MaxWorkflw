@@ -17,6 +17,11 @@
 //   run:<runId>:files      zset of attachment ids (score = createdAt). All keys below expire FILE_TTL_SEC.
 //   run:<runId>:file:<id>  JSON RunFile metadata.
 //   run:<runId>:file:<id>:<n>  base64 of chunk n (UPLOAD_CHUNK_BYTES raw bytes, last one shorter).
+//   chat:<ownerId>:general     list of ChatMessage JSON, oldest first, trimmed to CHAT_HISTORY_MAX.
+//   chat:<ownerId>:run:<runId> same, for one run's chat. Expires PROGRESS_TTL_SEC after the last append.
+//   chatjob:<jobId>            JSON ChatJob. Expires CHAT_JOB_TTL_SEC.
+//   runner:chat               list of chatjob ids, FIFO. Site RPUSHes; the runner LPOPs between steps and
+//   runner:chat:cloud         when idle. Separate from runner:queue so a chat never waits behind a run's queue entry.
 //
 // Draft runs (status "draft") are never queued and never in active:runs. POST /start queues one.
 //
@@ -27,9 +32,12 @@
 // independent step. Pipelined commands are not transactional.
 
 import { randomUUID } from "node:crypto";
-import type {
-  ApprovalDecision,
-  Run,
+import {
+  CHAT_HISTORY_MAX,
+  type ApprovalDecision,
+  type ChatJob,
+  type ChatMessage,
+  type Run,
   RunEvent,
   RunFile,
   RunIndexEntry,
@@ -59,6 +67,13 @@ export const PING_PREFIX = "ping:";
 export const PONG_TTL_SEC = 300;
 const pongKey = (nonce: string) => `runner:pong:${nonce}`;
 export const HEARTBEAT_KEY = "runner:heartbeat";
+/** Chat questions wait on the PC's chat queue, or the cloud's when the run was placed there. */
+export const CHAT_QUEUE_KEY = "runner:chat";
+export const CHAT_CLOUD_QUEUE_KEY = "runner:chat:cloud";
+/** Chat jobs are read once by the runner; this only keeps the record around for a while. */
+export const CHAT_JOB_TTL_SEC = 24 * 60 * 60;
+const chatQueueKeyFor = (placement: Placement | undefined) =>
+  placement === "cloud" ? CHAT_CLOUD_QUEUE_KEY : CHAT_QUEUE_KEY;
 /** One JSON object { [limitType]: UsageLimit }. Only the single PC runner writes it. */
 export const USAGE_KEY = "runner:usage";
 
@@ -137,6 +152,17 @@ export interface RunStore {
   completeRunFile(runId: string, fileId: string): Promise<number>;
   /** Removes the metadata, every chunk and the index entry. False when the file did not exist. */
   deleteRunFile(runId: string, fileId: string): Promise<boolean>;
+  /**
+   * Appends messages to the owner's chat: the one for `runId`, or the general chat when it is absent.
+   * Trims to CHAT_HISTORY_MAX. The caller must have checked run ownership.
+   */
+  appendChatMessages(ownerId: string, runId: string | undefined, messages: ChatMessage[]): Promise<void>;
+  /** The owner's chat, oldest first: the last `limit` messages. */
+  listChatMessages(ownerId: string, runId: string | undefined, limit?: number): Promise<ChatMessage[]>;
+  /** Site: stores the job and RPUSHes its id onto the placement's chat queue (default: the PC's), in one call. */
+  enqueueChatJob(job: ChatJob, placement?: Placement): Promise<void>;
+  /** Runner: LPOP up to `max` chat jobs from a placement's chat queue, oldest first. */
+  popChatJobs(max?: number, placement?: Placement): Promise<ChatJob[]>;
 }
 
 /** Raw bytes to base64, in slices, so large chunks do not overflow the call stack. */
@@ -200,6 +226,10 @@ const filesKey = (runId: string) => `run:${runId}:files`;
 const fileKey = (runId: string, fileId: string) => `run:${runId}:file:${fileId}`;
 const chunkKey = (runId: string, fileId: string, n: number) => `run:${runId}:file:${fileId}:${n}`;
 const FILE_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+const CHAT_JOB_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+const chatKey = (ownerId: string, runId: string | undefined) =>
+  runId === undefined ? `chat:${ownerId}:general` : `chat:${ownerId}:run:${runId}`;
+const chatJobKey = (id: string) => `chatjob:${id}`;
 /** Index entries read per list call. Well above MAX_FILES_PER_RUN. */
 const MAX_FILES_PER_LIST = 50;
 
@@ -472,6 +502,40 @@ export function createRunStore(kv: KvBackend): RunStore {
       ]);
       return true;
     },
+
+    async appendChatMessages(ownerId, runId, messages) {
+      if (runId !== undefined) assertRunId(runId);
+      if (messages.length === 0) return;
+      const key = chatKey(ownerId, runId);
+      await kv.pipeline([
+        ["RPUSH", key, ...messages.map((m) => JSON.stringify(m))],
+        ["LTRIM", key, -CHAT_HISTORY_MAX, -1],
+        ["EXPIRE", key, PROGRESS_TTL_SEC],
+      ]);
+    },
+
+    async listChatMessages(ownerId, runId, limit = CHAT_HISTORY_MAX) {
+      if (runId !== undefined) assertRunId(runId);
+      const raw = await one<string[] | null>(["LRANGE", chatKey(ownerId, runId), -Math.max(1, limit), -1]);
+      return (raw ?? []).map((item) => JSON.parse(item) as ChatMessage);
+    },
+
+    async enqueueChatJob(job, placement) {
+      if (!CHAT_JOB_ID_RE.test(job.id)) throw new Error("invalid chat job id");
+      if (job.runId !== undefined) assertRunId(job.runId);
+      await kv.pipeline([
+        ["SET", chatJobKey(job.id), JSON.stringify(job), "EX", CHAT_JOB_TTL_SEC],
+        ["RPUSH", chatQueueKeyFor(placement), job.id],
+      ]);
+    },
+
+    async popChatJobs(max = 5, placement) {
+      const ids = (await one<string[] | null>(["LPOP", chatQueueKeyFor(placement), Math.max(1, max)])) ?? [];
+      const valid = ids.filter((id) => CHAT_JOB_ID_RE.test(id));
+      if (valid.length === 0) return [];
+      const raws = await one<(string | null)[]>(["MGET", ...valid.map(chatJobKey)]);
+      return raws.filter((raw): raw is string => raw !== null).map((raw) => JSON.parse(raw) as ChatJob);
+    },
   };
 }
 
@@ -500,6 +564,13 @@ export function createUpstashBackend(
       return body.map((r) => r.result);
     },
   };
+}
+
+// Redis LRANGE/LTRIM bounds as a [from, to) slice: negative indexes count from the end, stop is inclusive.
+function listBounds(len: number, start: number, stop: number): [number, number] {
+  const from = start < 0 ? Math.max(0, len + start) : start;
+  const to = stop < 0 ? len + stop + 1 : stop + 1;
+  return [from, Math.max(from, Math.min(to, len))];
 }
 
 // In-memory backend. It interprets the same command set the store sends, so tests exercise the
@@ -608,7 +679,16 @@ export function createMemoryBackend(now: () => number = Date.now): KvBackend {
       case "LRANGE": {
         const [key, start, stop] = args;
         const list = lists.get(key) ?? [];
-        return list.slice(Number(start), Number(stop) + 1);
+        const [from, to] = listBounds(list.length, Number(start), Number(stop));
+        return list.slice(from, to);
+      }
+      case "LTRIM": {
+        const [key, start, stop] = args;
+        const list = lists.get(key);
+        if (!list) return "OK";
+        const [from, to] = listBounds(list.length, Number(start), Number(stop));
+        lists.set(key, list.slice(from, to));
+        return "OK";
       }
       default:
         throw new Error(`memory backend: unsupported command ${name}`);

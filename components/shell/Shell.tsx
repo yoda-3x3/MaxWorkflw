@@ -7,6 +7,7 @@ import { TimelineView, TreeView, WallView } from "../views";
 import { ActivityLog } from "./ActivityLog";
 import { AgentModal } from "./AgentModal";
 import { ApprovalCards } from "./ApprovalCards";
+import { ChatPanel } from "./ChatPanel";
 import { RunHeader } from "./RunHeader";
 import { RunSidebar, type UploadProgress } from "./RunSidebar";
 import { ViewSwitcher } from "./ViewSwitcher";
@@ -33,6 +34,7 @@ export function Shell() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [hydrated, setHydrated] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
 
   // Restore the remembered view after mount (localStorage is unavailable during SSR).
   useEffect(() => {
@@ -174,6 +176,14 @@ export function Shell() {
           <button type="button" onClick={() => dispatch({ type: "refresh" })}>
             Refresh
           </button>
+          <button
+            type="button"
+            onClick={() => setChatOpen((open) => !open)}
+            aria-expanded={chatOpen}
+            aria-controls="chat-panel"
+          >
+            Chat
+          </button>
         </div>
 
         {!selectedId && (
@@ -227,6 +237,12 @@ export function Shell() {
           </>
         )}
       </main>
+
+      {chatOpen && (
+        <div id="chat-panel" className="chat-dock">
+          <ChatPanel onClose={() => setChatOpen(false)} />
+        </div>
+      )}
 
       <AgentModal agent={detailAgent} approval={detailApproval} now={now} onClose={closeDetail} />
 

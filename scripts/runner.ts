@@ -12,6 +12,8 @@ import { createGitHubClient } from '../lib/github'
 import { resolveModels } from '../lib/llm'
 import { getRunStore } from '../lib/store'
 import { createSdkLlm, usageLimitFrom } from './lib/sdk-llm'
+import { answerQueuedChats } from './lib/chat'
+import type { Placement } from '../lib/types'
 import {
   isFinishedStatus,
   prepareRunAttachments,
@@ -51,6 +53,7 @@ const SHUTDOWN_GRACE_MS = 3_000
 // the queue is empty (the site starts a new one when it queues more work).
 const CLOUD = process.argv.includes('--cloud')
 const QUEUE: QueueName = CLOUD ? 'cloud' : 'pc'
+const PLACEMENT: Placement = CLOUD ? 'cloud' : 'pc'
 
 const secrets: string[] = []
 let stopping = false
@@ -105,6 +108,23 @@ const nodeFs: AttachmentFs = {
   }),
 }
 
+// Answers queued Orchestrator chat questions. Runs between engine steps and when idle, so a chat
+// waits at most one step. Never throws: a chat problem must not stop the run or the queue.
+async function answerChats(models: ReturnType<typeof resolveModels>): Promise<number> {
+  try {
+    return await answerQueuedChats({
+      store: getRunStore(),
+      llm: createSdkLlm({ env: process.env }),
+      model: models.orchestrator,
+      placement: PLACEMENT,
+      log,
+    })
+  } catch (err) {
+    log(`chat queue failed: ${err instanceof Error ? err.message : String(err)}`)
+    return 0
+  }
+}
+
 async function processRun(runId: string, c: UpstashClient, models: ReturnType<typeof resolveModels>): Promise<void> {
   const store = getRunStore()
   const run = await store.getRunForEngine(runId)
@@ -139,6 +159,7 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
 
     const result = await runLoop({
       step: async () => {
+        await answerChats(models)
         const r = await step(runId, {
           llm: createSdkLlm({
             env: process.env,
@@ -200,6 +221,7 @@ async function processRun(runId: string, c: UpstashClient, models: ReturnType<ty
 
 // One pass of the queue loop: returns how long to wait before the next pass.
 async function pollOnce(c: UpstashClient, models: ReturnType<typeof resolveModels>): Promise<number> {
+  if ((await answerChats(models)) > 0) return ACTIVE_POLL_MS
   const [runId] = await popQueue(c, 1, QUEUE)
   if (!runId) return IDLE_POLL_MS
   if (runId.startsWith(PING_PREFIX)) {

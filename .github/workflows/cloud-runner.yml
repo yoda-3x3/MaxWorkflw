@@ -1,7 +1,8 @@
 # WorkflwPro cloud runner. The site starts this (workflow_dispatch) when a run is placed on the
 # cloud: when "Run on" is Cloud, or Auto while the PC runner is offline. It works the cloud queue
-# (runner:queue:cloud) with Claude Code on the owner's subscription, then exits when the queue is
-# empty. The repo is public, so these minutes are free.
+# (runner:queue:cloud) and Orchestrator chat questions (runner:chat:cloud) with Claude Code on the
+# owner's subscription, then exits when both queues are empty. The repo is public, so these minutes
+# are free. No workflow change is needed for chat: the same runner code answers it.
 #
 # Repo secrets: CLAUDE_CODE_OAUTH_TOKEN, UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, and
 # RUNNER_GH_TOKEN (a token with Contents read/write on the repos runs work in, for repo mode).
